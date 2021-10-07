@@ -67,7 +67,7 @@ const (
 	// data without back pressure before the upper layer reads them.
 	recieveQueueLength = 4096
 	maxVarIntLength    = 8
-	probeInterval      = time.Minute
+	probeInterval      = time.Second
 	longRTT            = time.Minute
 	rttAlpha           = 0.5 // this causes EMA to reflect changes more rapidly
 )
