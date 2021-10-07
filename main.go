@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 
 	"github.com/getlantern/multipath"
 )
@@ -60,6 +61,7 @@ func main() {
 	io.Copy(os.Stdout, conn)
 	conn.Close()
 }
+
 func getListenAddressesDefault() string {
 	addresses, err := net.InterfaceAddrs()
 	if err != nil {
@@ -81,3 +83,12 @@ func getListenAddressesDefault() string {
 	}
 	return targets
 }
+
+type LogTracker struct {
+	Prefix string
+}
+
+func (st LogTracker) OnRecv(uint64)           {}
+func (st LogTracker) OnSent(uint64)           {}
+func (st LogTracker) OnRetransmit(uint64)     {}
+func (st LogTracker) UpdateRTT(time.Duration) {}
