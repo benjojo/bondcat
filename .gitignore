@@ -4,6 +4,9 @@
 *.dll
 *.so
 *.dylib
+bondcat
+bin/bondcat
+bin/*
 
 # Test binary, built with `go test -c`
 *.test
