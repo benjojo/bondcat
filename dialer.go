@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 )
 
@@ -17,6 +18,7 @@ type bondCatDailer struct {
 }
 
 func (b *bondCatDailer) DialContext(ctx context.Context) (net.Conn, error) {
+	log.Printf("New TCP connection to %s", b.dest)
 	return b.dialer.DialContext(ctx, "tcp", b.dest)
 }
 
