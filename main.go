@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -20,7 +19,7 @@ func main() {
 	// portFlag := flag.Int("p", 0, "Port to listen on")
 	flag.Parse()
 	otherArgs := flag.Args()
-	fmt.Printf(".")
+	// fmt.Printf(".")
 
 	if *listenFlag {
 		log.Printf("Listening on %v", *listenIPsFlag)

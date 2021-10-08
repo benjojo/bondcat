@@ -162,6 +162,7 @@ func (sf *subflow) sendLoop() {
 			time.AfterFunc(d, func() {
 				if sf.isPendingAck(frame.fn) {
 					// No ack means the subflow fails or has a longer RTT
+					log.Errorf("Retransmitting! %#v", frame.fn)
 					sf.updateRTT(d)
 					sf.mpc.retransmit(frame)
 				} else {

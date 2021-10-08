@@ -28,8 +28,18 @@ func (bc *mpConn) Read(b []byte) (n int, err error) {
 }
 
 func (bc *mpConn) Write(b []byte) (n int, err error) {
+	frame := composeFrame(atomic.AddUint64(&bc.lastFN, 1), b)
+
 	for _, sf := range bc.sortedSubflows() {
-		sf.sendQueue <- composeFrame(atomic.AddUint64(&bc.lastFN, 1), b)
+		select {
+		case sf.sendQueue <- frame:
+			return len(b), nil
+		default:
+		}
+	}
+
+	for _, sf := range bc.sortedSubflows() {
+		sf.sendQueue <- frame
 		return len(b), nil
 	}
 	return 0, ErrClosed
@@ -109,6 +119,7 @@ func (bc *mpConn) sortedSubflows() []*subflow {
 	bc.muSubflows.RUnlock()
 	sort.Slice(subflows, func(i, j int) bool {
 		return subflows[i].getRTT() < subflows[j].getRTT()
+		// return subflows[i].getEMAWriteTime() < subflows[j].getEMAWriteTime()
 	})
 	return subflows
 }
