@@ -18,53 +18,54 @@ type receiveQueue struct {
 	size uint64
 	// rp stands for read pointer, point to the index of the frame containing
 	// data yet to be read.
-	rp                      uint64
-	availableFrame          *sync.Cond
-	availableFrameSignaller chan bool
-	availableSlot           *sync.Cond
-	availableSlotSignaller  chan bool
-	readDeadline            time.Time
-	closed                  uint32 // 1 == true, 0 == false
+	rp             uint64
+	availableFrame *sync.Cond
+	readDeadline   time.Time
+	closed         uint32 // 1 == true, 0 == false
 }
 
 func newReceiveQueue(size int) *receiveQueue {
 	rq := &receiveQueue{
-		buf:                     make([]frame, size),
-		size:                    uint64(size),
-		rp:                      minFrameNumber % uint64(size), // frame number starts with minFrameNumber, so should the read pointer
-		availableFrame:          sync.NewCond(&sync.Mutex{}),
-		availableSlot:           sync.NewCond(&sync.Mutex{}),
-		availableSlotSignaller:  make(chan bool, 1),
-		availableFrameSignaller: make(chan bool, 1),
+		buf:            make([]frame, size),
+		size:           uint64(size),
+		rp:             minFrameNumber % uint64(size), // frame number starts with minFrameNumber, so should the read pointer
+		availableFrame: sync.NewCond(&sync.Mutex{}),
 	}
 	return rq
 }
 
 func (rq *receiveQueue) add(f *frame) {
+	tries := 0
 	for {
 		if rq.tryAdd(f) {
 			return
 		}
-		if !rq.waitForSlot() {
+
+		// Protect against the socket being closed
+		if atomic.LoadUint32(&rq.closed) == 1 {
 			pool.Put(f.bytes)
 			return
 		}
+
+		if tries < 3 {
+			if tries*int(time.Millisecond) > int(time.Millisecond)*50 {
+				time.Sleep(time.Millisecond * 50)
+			}
+			time.Sleep(time.Duration(tries) * time.Millisecond)
+		}
+		tries++
 	}
 }
 
 func (rq *receiveQueue) tryAdd(f *frame) bool {
 	idx := f.fn % rq.size
-	// rq.availableFrame.L.Lock()
-	// defer rq.availableFrame.L.Unlock()
+	rq.availableFrame.L.Lock()
+	defer rq.availableFrame.L.Unlock()
 	if rq.buf[idx].bytes == nil {
 		// empty slot
 		rq.buf[idx] = *f
 		if idx == rq.rp {
-			select {
-			case rq.availableFrameSignaller <- true:
-			default:
-			}
-			// rq.availableFrame.Signal()
+			rq.availableFrame.Signal()
 		}
 		return true
 	} else if rq.buf[idx].fn == f.fn {
@@ -75,20 +76,9 @@ func (rq *receiveQueue) tryAdd(f *frame) bool {
 	return false
 }
 
-func (rq *receiveQueue) waitForSlot() bool {
-	<-rq.availableSlotSignaller
-	// rq.availableSlot.L.Lock()
-	// rq.availableSlot.Wait()
-	// rq.availableSlot.L.Unlock()
-	if atomic.LoadUint32(&rq.closed) == 1 {
-		return false
-	}
-	return true
-}
-
 func (rq *receiveQueue) read(b []byte) (int, error) {
-	// rq.availableFrame.L.Lock()
-	// defer rq.availableFrame.L.Unlock()
+	rq.availableFrame.L.Lock()
+	defer rq.availableFrame.L.Unlock()
 	for {
 		if rq.buf[rq.rp].bytes != nil {
 			break
@@ -99,8 +89,7 @@ func (rq *receiveQueue) read(b []byte) (int, error) {
 		if rq.dlExceeded() {
 			return 0, context.DeadlineExceeded
 		}
-		<-rq.availableFrameSignaller
-		// rq.availableFrame.Wait()
+		rq.availableFrame.Wait()
 	}
 	totalN := 0
 	cur := rq.buf[rq.rp].bytes
@@ -118,48 +107,19 @@ func (rq *receiveQueue) read(b []byte) (int, error) {
 		totalN += n
 		cur = rq.buf[rq.rp].bytes
 	}
-
-	select {
-	case rq.availableSlotSignaller <- true:
-	default:
-	}
-
-	// rq.availableSlot.Signal()
 	return totalN, nil
 }
 
 func (rq *receiveQueue) setReadDeadline(dl time.Time) {
-	// rq.availableFrame.L.Lock()
+	rq.availableFrame.L.Lock()
 	rq.readDeadline = dl
-	// rq.availableFrame.L.Unlock()
+	rq.availableFrame.L.Unlock()
 	if !dl.IsZero() {
 		ttl := dl.Sub(time.Now())
 		if ttl <= 0 {
-			for {
-				abort := false
-				select {
-				case rq.availableFrameSignaller <- true:
-				default:
-					abort = true
-				}
-				if abort {
-					break
-				}
-			}
+			rq.availableFrame.Broadcast()
 		} else {
-			time.AfterFunc(ttl, func() {
-				for {
-					abort := false
-					select {
-					case rq.availableFrameSignaller <- true:
-					default:
-						abort = true
-					}
-					if abort {
-						break
-					}
-				}
-			})
+			time.AfterFunc(ttl, rq.availableFrame.Broadcast)
 		}
 	}
 }
@@ -170,27 +130,5 @@ func (rq *receiveQueue) dlExceeded() bool {
 
 func (rq *receiveQueue) close() {
 	atomic.StoreUint32(&rq.closed, 1)
-	for {
-		abort := false
-		select {
-		case rq.availableFrameSignaller <- true:
-		default:
-			abort = true
-		}
-		if abort {
-			break
-		}
-	}
-	// rq.availableFrame.Broadcast()
-	for {
-		abort := false
-		select {
-		case rq.availableSlotSignaller <- true:
-		default:
-			abort = true
-		}
-		if abort {
-			break
-		}
-	}
+	rq.availableFrame.Broadcast()
 }
