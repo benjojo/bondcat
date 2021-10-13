@@ -15,6 +15,7 @@ import (
 func main() {
 	verboseFlag := flag.Bool("v", false, "Verbose Mode")
 	listenFlag := flag.Bool("l", false, "Listen")
+	// debugDontSendZerors := flag.Bool("this-is-not-desktop", false, "dei")
 	listenIPsFlag := flag.String("listen-addresses", getListenAddressesDefault(), "")
 	// portFlag := flag.Int("p", 0, "Port to listen on")
 	flag.Parse()
@@ -37,7 +38,7 @@ func main() {
 		}
 
 		go io.Copy(conn, os.Stdin)
-		io.Copy(os.Stdout, conn)
+		// io.Copy(os.Stdout, conn)
 		return
 	}
 
