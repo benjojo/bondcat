@@ -66,52 +66,11 @@ func startSubflow(to string, c net.Conn, mpc *mpConn, clientSide bool, probeStar
 func (sf *subflow) readLoop() (err error) {
 	ch := make(chan *frame)
 	r := byteReader{Reader: sf.conn}
-	go func() {
-		defer close(ch)
-		for {
-			var sz, fn uint64
-			sz, err = ReadVarInt(r)
-			if err != nil {
-				sf.close()
-				return
-			}
-			fn, err = ReadVarInt(r)
-			if err != nil {
-				sf.close()
-				return
-			}
-			if sz == 0 {
-				sf.gotACK(fn)
-				continue
-			}
-			log.Tracef("got frame %d from %s with %d bytes", fn, sf.to, sz)
-			if sz > 1<<20 {
-				log.Errorf("Frame of size %v from %s is impossible", sz, sf.to)
-				sf.close()
-				return
-			}
-			buf := pool.Get(int(sz))
-			_, err = io.ReadFull(r, buf)
-			if err != nil {
-				pool.Put(buf)
-				sf.close()
-				return
-			}
-			sf.ack(fn)
-			ch <- &frame{fn: fn, bytes: buf}
-			sf.tracker.OnRecv(sz)
-			select {
-			case <-sf.chClose:
-				return
-			default:
-				// continue
-			}
-		}
-	}()
+	go sf.readLoopFrames(ch, err, r)
 	probeTimer := time.NewTimer(randomize(probeInterval))
 	for {
 		select {
-		case frame := <-ch:
+		case frame := <-ch: // Fed by readLoopFrames
 			if frame == nil {
 				return
 			}
@@ -125,6 +84,50 @@ func (sf *subflow) readLoop() (err error) {
 			probeTimer.Reset(randomize(probeInterval))
 		}
 	}
+}
+
+func (sf *subflow) readLoopFrames(ch chan *frame, err error, r byteReader) bool {
+	defer close(ch)
+	for {
+		var sz, fn uint64
+		sz, err = ReadVarInt(r)
+		if err != nil {
+			sf.close()
+			return true
+		}
+		fn, err = ReadVarInt(r)
+		if err != nil {
+			sf.close()
+			return true
+		}
+		if sz == 0 {
+			sf.gotACK(fn)
+			continue
+		}
+		log.Tracef("got frame %d from %s with %d bytes", fn, sf.to, sz)
+		if sz > 1<<20 {
+			log.Errorf("Frame of size %v from %s is impossible", sz, sf.to)
+			sf.close()
+			return true
+		}
+		buf := pool.Get(int(sz))
+		_, err = io.ReadFull(r, buf)
+		if err != nil {
+			pool.Put(buf)
+			sf.close()
+			return true
+		}
+		sf.ack(fn)
+		ch <- &frame{fn: fn, bytes: buf}
+		sf.tracker.OnRecv(sz)
+		select {
+		case <-sf.chClose:
+			return true
+		default:
+
+		}
+	}
+	return false
 }
 
 func (sf *subflow) sendLoop() {
