@@ -8,7 +8,6 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/getlantern/ema"
@@ -33,7 +32,6 @@ type subflow struct {
 	emaRTT        *ema.EMA
 	tracker       StatsTracker
 	lastWrite     time.Time
-	strikeOut     uint32
 }
 
 func startSubflow(to string, c net.Conn, mpc *mpConn, clientSide bool, probeStart time.Time, tracker StatsTracker) *subflow {
@@ -141,7 +139,7 @@ func (sf *subflow) sendLoop() {
 			return
 		case frame := <-sf.sendQueue:
 			sf.addPendingAck(frame)
-			sf.conn.SetWriteDeadline(time.Now().Add(time.Second * 20))
+			sf.conn.SetWriteDeadline(time.Now().Add(time.Second * 1))
 			n, err := sf.conn.Write(frame.buf)
 			if err != nil {
 				log.Debugf("failed to write frame %d to %s: %v", frame.fn, sf.to, err)
@@ -155,7 +153,6 @@ func (sf *subflow) sendLoop() {
 					sf.close()
 					return
 				} else {
-					atomic.StoreUint32(&sf.strikeOut, 1)
 					continue
 				}
 			}
@@ -260,9 +257,6 @@ func (sf *subflow) addPendingAck(frame *sendFrame) {
 		sf.pendingAcks.PushBack(pendingAck{frameTypePong, 0, time.Now()})
 	case frameTypePong:
 		// expect no response for pong
-		// clear any pending strikeouts though.
-		atomic.StoreUint32(&sf.strikeOut, 0)
-
 	default:
 		if frame.isDataFrame() {
 			sf.pendingAcks.PushBack(pendingAck{frame.fn, frame.sz, time.Now()})
