@@ -6,7 +6,9 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/getlantern/ema"
@@ -30,6 +32,8 @@ type subflow struct {
 	muPendingAcks sync.RWMutex
 	emaRTT        *ema.EMA
 	tracker       StatsTracker
+	lastWrite     time.Time
+	strikeOut     uint32
 }
 
 func startSubflow(to string, c net.Conn, mpc *mpConn, clientSide bool, probeStart time.Time, tracker StatsTracker) *subflow {
@@ -137,17 +141,25 @@ func (sf *subflow) sendLoop() {
 			return
 		case frame := <-sf.sendQueue:
 			sf.addPendingAck(frame)
+			sf.conn.SetWriteDeadline(time.Now().Add(time.Second * 20))
 			n, err := sf.conn.Write(frame.buf)
 			if err != nil {
 				log.Debugf("failed to write frame %d to %s: %v", frame.fn, sf.to, err)
 				// TODO: For temporary errors, maybe send the subflow to the
 				// back of the line instead of closing it.
-				sf.close()
 				if frame.isDataFrame() {
 					go sf.mpc.retransmit(frame)
 				}
-				return
+
+				if !strings.Contains(err.Error(), "i/o timeout") {
+					sf.close()
+					return
+				} else {
+					atomic.StoreUint32(&sf.strikeOut, 1)
+					continue
+				}
 			}
+			sf.lastWrite = time.Now()
 			if n != len(frame.buf) {
 				panic(fmt.Sprintf("expect to write %d bytes on %s, written %d", len(frame.buf), sf.to, n))
 			}
@@ -165,7 +177,7 @@ func (sf *subflow) sendLoop() {
 			time.AfterFunc(d, func() {
 				if sf.isPendingAck(frame.fn) {
 					// No ack means the subflow fails or has a longer RTT
-					log.Errorf("Retransmitting! %#v", frame.fn)
+					// log.Errorf("Retransmitting! %#v", frame.fn)
 					sf.updateRTT(d)
 					sf.mpc.retransmit(frame)
 				} else {
@@ -248,6 +260,9 @@ func (sf *subflow) addPendingAck(frame *sendFrame) {
 		sf.pendingAcks.PushBack(pendingAck{frameTypePong, 0, time.Now()})
 	case frameTypePong:
 		// expect no response for pong
+		// clear any pending strikeouts though.
+		atomic.StoreUint32(&sf.strikeOut, 0)
+
 	default:
 		if frame.isDataFrame() {
 			sf.pendingAcks.PushBack(pendingAck{frame.fn, frame.sz, time.Now()})

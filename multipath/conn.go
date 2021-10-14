@@ -114,11 +114,15 @@ func (bc *mpConn) retransmit(frame *sendFrame) {
 
 func (bc *mpConn) sortedSubflows() []*subflow {
 	bc.muSubflows.RLock()
-	subflows := make([]*subflow, len(bc.subflows))
-	copy(subflows, bc.subflows)
+	subflows := make([]*subflow, 0)
+	for _, sf := range bc.subflows {
+		if sf.strikeOut == 0 {
+			subflows = append(subflows, sf)
+		}
+	}
 	bc.muSubflows.RUnlock()
 	sort.Slice(subflows, func(i, j int) bool {
-		return subflows[i].getRTT() < subflows[j].getRTT()
+		return subflows[i].lastWrite.After(subflows[j].lastWrite)
 		// return subflows[i].getEMAWriteTime() < subflows[j].getEMAWriteTime()
 	})
 	return subflows
