@@ -50,7 +50,7 @@ func (rq *receiveQueue) add(f *frame) {
 			return
 		}
 
-		if tries < 3 {
+		if tries > 3 {
 			if tries*int(time.Millisecond) > int(time.Millisecond)*50 {
 				time.Sleep(time.Millisecond * 50)
 			}
