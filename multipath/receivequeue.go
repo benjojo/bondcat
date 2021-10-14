@@ -18,18 +18,21 @@ type receiveQueue struct {
 	size uint64
 	// rp stands for read pointer, point to the index of the frame containing
 	// data yet to be read.
-	rp             uint64
-	availableFrame *sync.Cond
-	readDeadline   time.Time
-	closed         uint32 // 1 == true, 0 == false
+	rp                    uint64
+	availableFrame        *sync.Cond
+	availableFrameChannel chan bool
+	readDeadline          time.Time
+	deadlineLock          sync.Mutex
+	closed                uint32 // 1 == true, 0 == false
 }
 
 func newReceiveQueue(size int) *receiveQueue {
 	rq := &receiveQueue{
-		buf:            make([]frame, size),
-		size:           uint64(size),
-		rp:             minFrameNumber % uint64(size), // frame number starts with minFrameNumber, so should the read pointer
-		availableFrame: sync.NewCond(&sync.Mutex{}),
+		buf:                   make([]frame, size),
+		size:                  uint64(size),
+		rp:                    minFrameNumber % uint64(size), // frame number starts with minFrameNumber, so should the read pointer
+		availableFrame:        sync.NewCond(&sync.Mutex{}),
+		availableFrameChannel: make(chan bool, 1),
 	}
 	return rq
 }
@@ -59,13 +62,14 @@ func (rq *receiveQueue) add(f *frame) {
 
 func (rq *receiveQueue) tryAdd(f *frame) bool {
 	idx := f.fn % rq.size
-	rq.availableFrame.L.Lock()
-	defer rq.availableFrame.L.Unlock()
 	if rq.buf[idx].bytes == nil {
 		// empty slot
 		rq.buf[idx] = *f
 		if idx == rq.rp {
-			rq.availableFrame.Signal()
+			select {
+			case rq.availableFrameChannel <- true:
+			default:
+			}
 		}
 		return true
 	} else if rq.buf[idx].fn == f.fn {
@@ -77,8 +81,6 @@ func (rq *receiveQueue) tryAdd(f *frame) bool {
 }
 
 func (rq *receiveQueue) read(b []byte) (int, error) {
-	rq.availableFrame.L.Lock()
-	defer rq.availableFrame.L.Unlock()
 	for {
 		if rq.buf[rq.rp].bytes != nil {
 			break
@@ -89,7 +91,7 @@ func (rq *receiveQueue) read(b []byte) (int, error) {
 		if rq.dlExceeded() {
 			return 0, context.DeadlineExceeded
 		}
-		rq.availableFrame.Wait()
+		<-rq.availableFrameChannel
 	}
 	totalN := 0
 	cur := rq.buf[rq.rp].bytes
@@ -111,13 +113,23 @@ func (rq *receiveQueue) read(b []byte) (int, error) {
 }
 
 func (rq *receiveQueue) setReadDeadline(dl time.Time) {
-	rq.availableFrame.L.Lock()
+	rq.deadlineLock.Lock()
 	rq.readDeadline = dl
-	rq.availableFrame.L.Unlock()
+	rq.deadlineLock.Unlock()
 	if !dl.IsZero() {
 		ttl := dl.Sub(time.Now())
 		if ttl <= 0 {
-			rq.availableFrame.Broadcast()
+			for {
+				abort := false
+				select {
+				case rq.availableFrameChannel <- true:
+				default:
+					abort = true
+				}
+				if abort {
+					break
+				}
+			}
 		} else {
 			time.AfterFunc(ttl, rq.availableFrame.Broadcast)
 		}
@@ -130,5 +142,15 @@ func (rq *receiveQueue) dlExceeded() bool {
 
 func (rq *receiveQueue) close() {
 	atomic.StoreUint32(&rq.closed, 1)
-	rq.availableFrame.Broadcast()
+	for {
+		abort := false
+		select {
+		case rq.availableFrameChannel <- true:
+		default:
+			abort = true
+		}
+		if abort {
+			break
+		}
+	}
 }
