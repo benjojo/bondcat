@@ -139,12 +139,12 @@ func (sf *subflow) sendLoop() {
 			return
 		case frame := <-sf.sendQueue:
 			sf.addPendingAck(frame)
+			sf.conn.SetWriteDeadline(time.Now().Add(time.Second * 1))
+			n, err := sf.conn.Write(frame.buf)
 			select {
 			case sf.mpc.writerMaybeReady <- true:
 			default:
 			}
-			sf.conn.SetWriteDeadline(time.Now().Add(time.Second * 1))
-			n, err := sf.conn.Write(frame.buf)
 			if err != nil {
 				log.Debugf("failed to write frame %d to %s: %v", frame.fn, sf.to, err)
 				// TODO: For temporary errors, maybe send the subflow to the
