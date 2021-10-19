@@ -9,18 +9,20 @@ import (
 )
 
 type mpConn struct {
-	cid        connectionID
-	lastFN     uint64
-	subflows   []*subflow
-	muSubflows sync.RWMutex
-	recvQueue  *receiveQueue
-	closed     uint32 // 1 == true, 0 == false
+	cid              connectionID
+	lastFN           uint64
+	subflows         []*subflow
+	muSubflows       sync.RWMutex
+	recvQueue        *receiveQueue
+	closed           uint32 // 1 == true, 0 == false
+	writerMaybeReady chan bool
 }
 
 func newMPConn(cid connectionID) *mpConn {
 	return &mpConn{cid: cid,
-		lastFN:    minFrameNumber - 1,
-		recvQueue: newReceiveQueue(recieveQueueLength),
+		lastFN:           minFrameNumber - 1,
+		recvQueue:        newReceiveQueue(recieveQueueLength),
+		writerMaybeReady: make(chan bool, 1),
 	}
 }
 func (bc *mpConn) Read(b []byte) (n int, err error) {
@@ -30,19 +32,20 @@ func (bc *mpConn) Read(b []byte) (n int, err error) {
 func (bc *mpConn) Write(b []byte) (n int, err error) {
 	frame := composeFrame(atomic.AddUint64(&bc.lastFN, 1), b)
 
-	for _, sf := range bc.sortedSubflows() {
-		select {
-		case sf.sendQueue <- frame:
-			return len(b), nil
-		default:
+	for {
+		for _, sf := range bc.sortedSubflows() {
+			select {
+			case sf.sendQueue <- frame:
+				return len(b), nil
+			default:
+			}
 		}
-	}
+		if len(bc.sortedSubflows()) == 0 {
+			return 0, ErrClosed
+		}
 
-	for _, sf := range bc.sortedSubflows() {
-		sf.sendQueue <- frame
-		return len(b), nil
+		<-bc.writerMaybeReady
 	}
-	return 0, ErrClosed
 }
 
 func (bc *mpConn) Close() error {

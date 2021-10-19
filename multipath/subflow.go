@@ -139,6 +139,10 @@ func (sf *subflow) sendLoop() {
 			return
 		case frame := <-sf.sendQueue:
 			sf.addPendingAck(frame)
+			select {
+			case sf.mpc.writerMaybeReady <- true:
+			default:
+			}
 			sf.conn.SetWriteDeadline(time.Now().Add(time.Second * 1))
 			n, err := sf.conn.Write(frame.buf)
 			if err != nil {
