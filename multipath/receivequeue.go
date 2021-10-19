@@ -19,7 +19,6 @@ type receiveQueue struct {
 	// rp stands for read pointer, point to the index of the frame containing
 	// data yet to be read.
 	rp                    uint64
-	availableFrame        *sync.Cond
 	availableFrameChannel chan bool
 	readDeadline          time.Time
 	deadlineLock          sync.Mutex
@@ -31,7 +30,6 @@ func newReceiveQueue(size int) *receiveQueue {
 		buf:                   make([]frame, size),
 		size:                  uint64(size),
 		rp:                    minFrameNumber % uint64(size), // frame number starts with minFrameNumber, so should the read pointer
-		availableFrame:        sync.NewCond(&sync.Mutex{}),
 		availableFrameChannel: make(chan bool, 1),
 	}
 	return rq
@@ -53,8 +51,9 @@ func (rq *receiveQueue) add(f *frame) {
 		if tries > 3 {
 			if tries*int(time.Millisecond) > int(time.Millisecond)*50 {
 				time.Sleep(time.Millisecond * 50)
+			} else {
+				time.Sleep(time.Duration(tries) * time.Millisecond)
 			}
-			time.Sleep(time.Duration(tries) * time.Millisecond)
 		}
 		tries++
 	}
@@ -131,7 +130,9 @@ func (rq *receiveQueue) setReadDeadline(dl time.Time) {
 				}
 			}
 		} else {
-			time.AfterFunc(ttl, rq.availableFrame.Broadcast)
+			time.AfterFunc(ttl, func() {
+				rq.availableFrameChannel <- true
+			})
 		}
 	}
 }
@@ -142,8 +143,8 @@ func (rq *receiveQueue) dlExceeded() bool {
 
 func (rq *receiveQueue) close() {
 	atomic.StoreUint32(&rq.closed, 1)
+	abort := false
 	for {
-		abort := false
 		select {
 		case rq.availableFrameChannel <- true:
 		default:

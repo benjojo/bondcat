@@ -121,7 +121,7 @@ func (bc *mpConn) sortedSubflows() []*subflow {
 	copy(subflows, bc.subflows)
 	bc.muSubflows.RUnlock()
 	sort.Slice(subflows, func(i, j int) bool {
-		return subflows[i].lastWrite.Before(subflows[j].lastWrite)
+		return subflows[i].lastWrite.After(subflows[j].lastWrite)
 		// return subflows[i].getEMAWriteTime() < subflows[j].getEMAWriteTime()
 	})
 	return subflows
