@@ -2,6 +2,7 @@ package multipath
 
 import (
 	"context"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,6 +24,7 @@ type receiveQueue struct {
 	readDeadline          time.Time
 	deadlineLock          sync.Mutex
 	closed                uint32 // 1 == true, 0 == false
+	readFrameTip          uint64
 }
 
 func newReceiveQueue(size int) *receiveQueue {
@@ -30,33 +32,41 @@ func newReceiveQueue(size int) *receiveQueue {
 		buf:                   make([]frame, size),
 		size:                  uint64(size),
 		rp:                    minFrameNumber % uint64(size), // frame number starts with minFrameNumber, so should the read pointer
-		availableFrameChannel: make(chan bool, 1),
+		availableFrameChannel: make(chan bool),
 	}
 	return rq
 }
 
-func (rq *receiveQueue) add(f *frame) {
-	tries := 0
-	for {
-		if rq.tryAdd(f) {
-			return
-		}
+func (rq *receiveQueue) add(f *frame, sf *subflow) {
 
-		// Protect against the socket being closed
-		if atomic.LoadUint32(&rq.closed) == 1 {
-			pool.Put(f.bytes)
-			return
-		}
-
-		if tries > 3 {
-			if tries*int(time.Millisecond) > int(time.Millisecond)*50 {
-				time.Sleep(time.Millisecond * 50)
-			} else {
-				time.Sleep(time.Duration(tries) * time.Millisecond)
-			}
-		}
-		tries++
+	select {
+	case rq.availableFrameChannel <- true:
+	default:
 	}
+
+	if rq.readFrameTip != 0 {
+		if atomic.LoadUint64(&rq.readFrameTip) > f.fn || rq.readFrameTip == f.fn {
+			sf.ack(f.fn)
+			return
+		}
+	}
+
+	if f.fn > rq.readFrameTip+rq.size-1 {
+		log.Debugf("Near corruption incident??")
+		return // Nope! this will corrupt the buffer
+	}
+
+	if rq.tryAdd(f) {
+		sf.ack(f.fn)
+		return
+	}
+
+	// Protect against the socket being closed
+	if atomic.LoadUint32(&rq.closed) == 1 {
+		pool.Put(f.bytes)
+		return
+	}
+
 }
 
 func (rq *receiveQueue) tryAdd(f *frame) bool {
@@ -73,14 +83,38 @@ func (rq *receiveQueue) tryAdd(f *frame) bool {
 		return true
 	} else if rq.buf[idx].fn == f.fn {
 		// retransmission, ignore
+		log.Debugf("Got a retransmit. for %d", f.fn)
 		pool.Put(f.bytes)
 		return true
+	}
+
+	if idx != 0 {
+		log.Debugf("Not what I was looking for, I'm looking for frame %v", rq.buf[idx-1].fn+1)
 	}
 	return false
 }
 
+func (rq *receiveQueue) getHiLoFrameNumber() (high uint64, low uint64, empty bool) {
+	low = math.MaxUint64 - 1
+	empty = true
+	for _, v := range rq.buf {
+		if v.fn > minFrameNumber {
+			if v.fn > high {
+				high = v.fn
+			} else if low > v.fn {
+				low = v.fn
+				empty = false
+			}
+		}
+	}
+	return high, low, empty
+}
+
 func (rq *receiveQueue) read(b []byte) (int, error) {
 	for {
+		if rq.rp != 0 {
+			// log.Debugf("looking for %v", rq.buf[rq.rp-1].fn+1)
+		}
 		if rq.buf[rq.rp].bytes != nil {
 			break
 		}
@@ -90,11 +124,14 @@ func (rq *receiveQueue) read(b []byte) (int, error) {
 		if rq.dlExceeded() {
 			return 0, context.DeadlineExceeded
 		}
+		// fmt.Printf("Waiting on <-rq.availableFrameChannel\n")
 		<-rq.availableFrameChannel
 	}
+
 	totalN := 0
 	cur := rq.buf[rq.rp].bytes
 	for cur != nil && totalN < len(b) {
+		atomic.StoreUint64(&rq.readFrameTip, rq.buf[rq.rp].fn)
 		n := copy(b[totalN:], cur)
 		if n == len(cur) {
 			pool.Put(cur)
@@ -107,6 +144,7 @@ func (rq *receiveQueue) read(b []byte) (int, error) {
 		}
 		totalN += n
 		cur = rq.buf[rq.rp].bytes
+		rq.buf[rq.rp].bccDebugIveBeenHere = true
 	}
 	return totalN, nil
 }

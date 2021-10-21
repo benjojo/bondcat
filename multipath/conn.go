@@ -1,6 +1,7 @@
 package multipath
 
 import (
+	"fmt"
 	"net"
 	"sort"
 	"sync"
@@ -16,6 +17,9 @@ type mpConn struct {
 	recvQueue        *receiveQueue
 	closed           uint32 // 1 == true, 0 == false
 	writerMaybeReady chan bool
+
+	pendingAckMap map[uint64]*pendingAck
+	pendingAckMu  *sync.RWMutex
 }
 
 func newMPConn(cid connectionID) *mpConn {
@@ -23,6 +27,8 @@ func newMPConn(cid connectionID) *mpConn {
 		lastFN:           minFrameNumber - 1,
 		recvQueue:        newReceiveQueue(recieveQueueLength),
 		writerMaybeReady: make(chan bool, 1),
+		pendingAckMap:    make(map[uint64]*pendingAck),
+		pendingAckMu:     &sync.RWMutex{},
 	}
 }
 func (bc *mpConn) Read(b []byte) (n int, err error) {
@@ -33,6 +39,15 @@ func (bc *mpConn) Write(b []byte) (n int, err error) {
 	frame := composeFrame(atomic.AddUint64(&bc.lastFN, 1), b)
 
 	for {
+		bc.pendingAckMu.RLock()
+		inflight := len(bc.pendingAckMap)
+		bc.pendingAckMu.RUnlock()
+		if inflight > 500 {
+			time.Sleep(time.Millisecond * 100)
+			fmt.Printf("too many inflights\n")
+			continue
+		}
+
 		for _, sf := range bc.sortedSubflows() {
 			select {
 			case sf.sendQueue <- frame:
@@ -100,15 +115,15 @@ func (bc *mpConn) retransmit(frame *sendFrame) {
 	subflows := bc.sortedSubflows()
 	for _, sf := range subflows {
 		// choose the first subflow not waiting ack for this frame
-		if !sf.isPendingAck(frame.fn) {
-			select {
-			case <-sf.chClose:
-				// continue
-			case sf.sendQueue <- frame:
-				log.Tracef("retransmitted frame %d via %s", frame.fn, sf.to)
-				return
-			}
+		// if !sf.isPendingAck(frame.fn) {
+		select {
+		case <-sf.chClose:
+			// continue
+		case sf.sendQueue <- frame:
+			log.Debugf("retransmitted frame %d via %s", frame.fn, sf.to)
+			return
 		}
+		// }
 	}
 	log.Tracef("frame %d is being retransmitted on all subflows of %x, give up", frame.fn, bc.cid)
 	frame.release()

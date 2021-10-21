@@ -41,7 +41,7 @@ func startSubflow(to string, c net.Conn, mpc *mpConn, clientSide bool, probeStar
 		mpc:         mpc,
 		chClose:     make(chan struct{}),
 		sendQueue:   make(chan *sendFrame, 1),
-		pendingAcks: list.New(),
+		pendingAcks: list.New(), // Only for pings
 		emaRTT:      ema.NewDuration(longRTT, rttAlpha),
 		tracker:     tracker,
 	}
@@ -76,7 +76,7 @@ func (sf *subflow) readLoop() (err error) {
 			if frame == nil {
 				return
 			}
-			sf.mpc.recvQueue.add(frame)
+			sf.mpc.recvQueue.add(frame, sf)
 			if !probeTimer.Stop() {
 				<-probeTimer.C
 			}
@@ -89,6 +89,16 @@ func (sf *subflow) readLoop() (err error) {
 }
 
 func (sf *subflow) readLoopFrames(ch chan *frame, err error, r byteReader) bool {
+	lastRead := time.Now()
+	go func() {
+		for {
+			time.Sleep(time.Second)
+			if time.Since(lastRead) > time.Second*5 {
+				log.Debugf("readLoopFrames [%v] stuck for %v", sf.to, time.Since(lastRead))
+			}
+		}
+	}()
+
 	defer close(ch)
 	for {
 		var sz, fn uint64
@@ -119,7 +129,14 @@ func (sf *subflow) readLoopFrames(ch chan *frame, err error, r byteReader) bool 
 			sf.close()
 			return true
 		}
-		sf.ack(fn)
+		lastRead = time.Now()
+
+		if fn > (sf.mpc.recvQueue.readFrameTip + sf.mpc.recvQueue.size) {
+			// log.Errorf("Dropped frame that is too far in the future to apply %v vs ", fn, (sf.mpc.recvQueue.readFrameTip + sf.mpc.recvQueue.size))
+			continue
+		}
+
+		// sf.ack(fn)
 		ch <- &frame{fn: fn, bytes: buf}
 		sf.tracker.OnRecv(sz)
 		select {
@@ -138,6 +155,10 @@ func (sf *subflow) sendLoop() {
 		case <-sf.chClose:
 			return
 		case frame := <-sf.sendQueue:
+			if frame.retransmissions != 0 {
+				fmt.Printf("Retransmit on %d, for the %dth time\n", frame.fn, frame.retransmissions)
+				time.Sleep(time.Millisecond * 100)
+			}
 			sf.addPendingAck(frame)
 			sf.conn.SetWriteDeadline(time.Now().Add(time.Second * 1))
 			n, err := sf.conn.Write(frame.buf)
@@ -205,21 +226,20 @@ func (sf *subflow) gotACK(fn uint64) {
 		sf.ack(frameTypePong)
 		return
 	}
-	sf.muPendingAcks.Lock()
-	defer sf.muPendingAcks.Unlock()
-	e := sf.pendingAcks.Front()
-	if e == nil {
+
+	sf.mpc.pendingAckMu.RLock()
+	pending := sf.mpc.pendingAckMap[fn]
+	if sf.mpc.pendingAckMap[fn] != nil {
+		sf.mpc.pendingAckMu.RUnlock()
+		sf.mpc.pendingAckMu.Lock()
+		delete(sf.mpc.pendingAckMap, fn)
+		sf.mpc.pendingAckMu.Unlock()
+	} else {
 		log.Errorf("unsolicited ack for frame %d from %s", fn, sf.to)
-		sf.close()
+		sf.mpc.pendingAckMu.RUnlock()
 		return
 	}
-	pending := e.Value.(pendingAck)
-	if pending.fn != fn {
-		log.Errorf("unsolicited ack for frame %d from %s, expect %d", fn, sf.to, pending.fn)
-		sf.close()
-		return
-	}
-	sf.pendingAcks.Remove(e)
+
 	if pending.sz < maxFrameSizeToCalculateRTT {
 		// it's okay to calculate RTT this way because ack frame is always sent
 		// back through the same subflow, and a data frame is never sent over
@@ -254,23 +274,31 @@ func (sf *subflow) getRTT() time.Duration {
 }
 
 func (sf *subflow) addPendingAck(frame *sendFrame) {
-	sf.muPendingAcks.Lock()
 	switch frame.fn {
 	case frameTypePing:
 		// we expect pong for ping
+		sf.muPendingAcks.Lock()
 		sf.pendingAcks.PushBack(pendingAck{frameTypePong, 0, time.Now()})
+		sf.muPendingAcks.Unlock()
 	case frameTypePong:
 		// expect no response for pong
 	default:
 		if frame.isDataFrame() {
-			sf.pendingAcks.PushBack(pendingAck{frame.fn, frame.sz, time.Now()})
+			sf.mpc.pendingAckMu.Lock()
+			sf.mpc.pendingAckMap[frame.fn] = &pendingAck{frame.fn, frame.sz, time.Now()}
+			sf.mpc.pendingAckMu.Unlock()
 		}
 	}
-	sf.muPendingAcks.Unlock()
 
 }
 
 func (sf *subflow) isPendingAck(fn uint64) bool {
+	if fn > minFrameNumber {
+		sf.mpc.pendingAckMu.RLock()
+		defer sf.mpc.pendingAckMu.RUnlock()
+		return sf.mpc.pendingAckMap[fn] != nil
+	}
+	// use local pendingAcks list for non data frames
 	sf.muPendingAcks.RLock()
 	defer sf.muPendingAcks.RUnlock()
 	for e := sf.pendingAcks.Front(); e != nil; e = e.Next() {
@@ -279,6 +307,7 @@ func (sf *subflow) isPendingAck(fn uint64) bool {
 		}
 	}
 	return false
+
 }
 
 func (sf *subflow) probe() {

@@ -83,8 +83,9 @@ var (
 
 type connectionID uuid.UUID
 type frame struct {
-	fn    uint64
-	bytes []byte
+	fn                  uint64
+	bytes               []byte
+	bccDebugIveBeenHere bool
 }
 
 type sendFrame struct {
@@ -135,3 +136,34 @@ func (st NullTracker) OnRecv(uint64)           {}
 func (st NullTracker) OnSent(uint64)           {}
 func (st NullTracker) OnRetransmit(uint64)     {}
 func (st NullTracker) UpdateRTT(time.Duration) {}
+
+// ben debug
+
+type Counter struct {
+	RX, TX uint64
+}
+
+type DevZero struct {
+	C *Counter
+}
+
+func (D DevZero) Write(b []byte) (int, error) {
+	before := D.C.RX
+	D.C.RX += uint64(len(b))
+	if before/1e8 != D.C.RX/1e8 {
+		log.Debugf("RX'd %d bytes", D.C.RX)
+	}
+	return len(b), nil
+}
+
+func (D DevZero) Read(b []byte) (int, error) {
+	for k := range b {
+		b[k] = 0x00
+	}
+	before := D.C.TX
+	D.C.TX += uint64(len(b))
+	if before/1e8 != D.C.TX/1e8 {
+		log.Debugf("TX'd %d bytes", D.C.TX)
+	}
+	return len(b), nil
+}
