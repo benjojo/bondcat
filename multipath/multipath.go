@@ -158,7 +158,7 @@ func (D DevZero) Read(b []byte) (int, error) {
 	for k := range b {
 		b[k] = 0x00
 	}
-	transmitted := 16000
+	transmitted := 512
 	if len(b) < transmitted {
 		transmitted = len(b)
 	}

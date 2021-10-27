@@ -18,6 +18,7 @@ type pendingAck struct {
 	sz         uint64
 	sentAt     time.Time
 	outboundSf *subflow
+	framePtr   *sendFrame
 }
 type subflow struct {
 	to   string
@@ -56,7 +57,7 @@ func startSubflow(to string, c net.Conn, mpc *mpConn, clientSide bool, probeStar
 	} else {
 		// server side subflow expects a pong frame to calculate RTT.
 		sf.muPendingPing.Lock()
-		sf.pendingPing = &pendingAck{frameTypePong, 0, probeStart, sf}
+		sf.pendingPing = &pendingAck{frameTypePong, 0, probeStart, sf, nil}
 		sf.muPendingPing.Unlock()
 	}
 	go func() {
@@ -170,22 +171,22 @@ func (sf *subflow) sendLoop() {
 			}
 			sf.addPendingAck(frame)
 
-			d := sf.retransTimer()
-			// fmt.Printf("The retransmit timer is %v \n", d)
-			time.AfterFunc(d, func() {
-				if sf.isPendingAck(frame.fn) {
-					// No ack means the subflow fails or has a longer RTT
-					// log.Errorf("Retransmitting! %#v", frame.fn)
-					sf.updateRTT(d)
-					sf.mpc.retransmit(frame)
-				} else {
-					// It is ok to release buffer here as the frame will never
-					// be retransmitted again.
-					frame.release()
-				}
-			})
+			// d := sf.retransTimer()
+			// // fmt.Printf("The retransmit timer is %v \n", d)
+			// time.AfterFunc(d, func() {
+			// 	if sf.isPendingAck(frame.fn) {
+			// 		// No ack means the subflow fails or has a longer RTT
+			// 		// log.Errorf("Retransmitting! %#v", frame.fn)
+			// 		sf.updateRTT(d)
+			// 		sf.mpc.retransmit(frame)
+			// 	} else {
+			// 		// It is ok to release buffer here as the frame will never
+			// 		// be retransmitted again.
+			// 		frame.release()
+			// 	}
+			// })
 
-			sf.conn.SetWriteDeadline(time.Now().Add(time.Second * 1))
+			sf.conn.SetWriteDeadline(time.Now().Add(sf.retransTimer() * 4))
 			n, err := sf.conn.Write(frame.buf)
 			select {
 			case sf.mpc.writerMaybeReady <- true:
@@ -286,14 +287,14 @@ func (sf *subflow) addPendingAck(frame *sendFrame) {
 	case frameTypePing:
 		// we expect pong for ping
 		sf.muPendingPing.Lock()
-		sf.pendingPing = &pendingAck{frameTypePong, 0, time.Now(), sf}
+		sf.pendingPing = &pendingAck{frameTypePong, 0, time.Now(), sf, nil}
 		sf.muPendingPing.Unlock()
 	case frameTypePong:
 		// expect no response for pong
 	default:
 		if frame.isDataFrame() {
 			sf.mpc.pendingAckMu.Lock()
-			sf.mpc.pendingAckMap[frame.fn] = &pendingAck{frame.fn, frame.sz, time.Now(), sf}
+			sf.mpc.pendingAckMap[frame.fn] = &pendingAck{frame.fn, frame.sz, time.Now(), sf, frame}
 			sf.mpc.pendingAckMu.Unlock()
 		}
 	}

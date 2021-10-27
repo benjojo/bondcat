@@ -23,13 +23,15 @@ type mpConn struct {
 }
 
 func newMPConn(cid connectionID) *mpConn {
-	return &mpConn{cid: cid,
+	mpc := &mpConn{cid: cid,
 		lastFN:           minFrameNumber - 1,
 		recvQueue:        newReceiveQueue(recieveQueueLength),
 		writerMaybeReady: make(chan bool, 1),
 		pendingAckMap:    make(map[uint64]*pendingAck),
 		pendingAckMu:     &sync.RWMutex{},
 	}
+	go mpc.retransmitLoop()
+	return mpc
 }
 func (bc *mpConn) Read(b []byte) (n int, err error) {
 	return bc.recvQueue.read(b)
@@ -119,7 +121,7 @@ func (bc *mpConn) retransmit(frame *sendFrame) {
 		for _, sf := range subflows {
 			select {
 			case <-sf.chClose:
-				// continue
+				continue
 			case sf.sendQueue <- frame:
 				log.Debugf("retransmitted frame %d via %s", frame.fn, sf.to)
 				return
@@ -171,4 +173,59 @@ func (bc *mpConn) remove(theSubflow *subflow) {
 	if left == 0 {
 		bc.close()
 	}
+}
+
+func (bc *mpConn) retransmitLoop() {
+	evalTick := time.NewTicker(time.Millisecond * 100)
+	for {
+		select {
+		case <-evalTick.C:
+		}
+		if bc.closed == 1 {
+			return
+		}
+
+		bc.pendingAckMu.RLock()
+		RetransmitFrames := make([]pendingAck, 0)
+		for fn, frame := range bc.pendingAckMap {
+			if time.Since(frame.sentAt) > frame.outboundSf.retransTimer() {
+				if bc.isPendingAck(fn) {
+					RetransmitFrames = append(RetransmitFrames, *frame)
+				}
+			}
+		}
+		bc.pendingAckMu.RUnlock()
+
+		sort.Slice(RetransmitFrames, func(i, j int) bool {
+			return RetransmitFrames[i].fn > RetransmitFrames[j].fn
+		})
+
+		for _, frame := range RetransmitFrames {
+			sendframe := frame.framePtr
+			if bc.isPendingAck(frame.fn) {
+				// No ack means the subflow fails or has a longer RTT
+				// log.Errorf("Retransmitting! %#v", frame.fn)
+				bc.pendingAckMap[uint64(frame.fn)].outboundSf.updateRTT(time.Since(frame.sentAt))
+				go bc.retransmit(sendframe)
+			} else {
+				// It is ok to release buffer here as the frame will never
+				// be retransmitted again.
+				sendframe.release()
+				bc.pendingAckMu.Lock()
+				delete(bc.pendingAckMap, frame.fn)
+				bc.pendingAckMu.Unlock()
+			}
+		}
+
+	}
+}
+
+func (bc *mpConn) isPendingAck(fn uint64) bool {
+	if fn > minFrameNumber {
+		bc.pendingAckMu.RLock()
+		defer bc.pendingAckMu.RUnlock()
+		return bc.pendingAckMap[fn] != nil
+	}
+	return false
+
 }
