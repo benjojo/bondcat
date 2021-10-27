@@ -113,18 +113,27 @@ func (bc *mpConn) SetWriteDeadline(t time.Time) error {
 func (bc *mpConn) retransmit(frame *sendFrame) {
 	frame.retransmissions++
 	subflows := bc.sortedSubflows()
-	for _, sf := range subflows {
-		// choose the first subflow not waiting ack for this frame
-		// if !sf.isPendingAck(frame.fn) {
-		select {
-		case <-sf.chClose:
-			// continue
-		case sf.sendQueue <- frame:
-			log.Debugf("retransmitted frame %d via %s", frame.fn, sf.to)
-			return
+	ticker := time.NewTimer(time.Minute)
+	for {
+		abort := false
+		for _, sf := range subflows {
+			select {
+			case <-sf.chClose:
+				// continue
+			case sf.sendQueue <- frame:
+				log.Debugf("retransmitted frame %d via %s", frame.fn, sf.to)
+				return
+			case <-ticker.C:
+				abort = true
+				break
+			}
 		}
-		// }
+		if abort {
+			break
+		}
+		<-bc.writerMaybeReady
 	}
+
 	log.Tracef("frame %d is being retransmitted on all subflows of %x, give up", frame.fn, bc.cid)
 	frame.release()
 	return
@@ -136,8 +145,8 @@ func (bc *mpConn) sortedSubflows() []*subflow {
 	copy(subflows, bc.subflows)
 	bc.muSubflows.RUnlock()
 	sort.Slice(subflows, func(i, j int) bool {
-		return subflows[i].lastWrite.After(subflows[j].lastWrite)
-		// return subflows[i].getEMAWriteTime() < subflows[j].getEMAWriteTime()
+		// return subflows[i].lastWrite.After(subflows[j].lastWrite)
+		return subflows[i].emaRTT.Get() < subflows[j].emaRTT.Get()
 	})
 	return subflows
 }

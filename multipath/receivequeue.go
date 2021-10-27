@@ -2,7 +2,7 @@ package multipath
 
 import (
 	"context"
-	"math"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,6 +25,7 @@ type receiveQueue struct {
 	deadlineLock          sync.Mutex
 	closed                uint32 // 1 == true, 0 == false
 	readFrameTip          uint64
+	readLockmaybeidk      *sync.Mutex
 }
 
 func newReceiveQueue(size int) *receiveQueue {
@@ -33,6 +34,7 @@ func newReceiveQueue(size int) *receiveQueue {
 		size:                  uint64(size),
 		rp:                    minFrameNumber % uint64(size), // frame number starts with minFrameNumber, so should the read pointer
 		availableFrameChannel: make(chan bool),
+		readLockmaybeidk:      &sync.Mutex{},
 	}
 	return rq
 }
@@ -44,15 +46,17 @@ func (rq *receiveQueue) add(f *frame, sf *subflow) {
 	default:
 	}
 
-	if rq.readFrameTip != 0 {
-		if atomic.LoadUint64(&rq.readFrameTip) > f.fn || rq.readFrameTip == f.fn {
+	readFrameTip := atomic.LoadUint64(&rq.readFrameTip)
+
+	if readFrameTip != 0 {
+		if readFrameTip > f.fn || readFrameTip == f.fn {
 			sf.ack(f.fn)
 			return
 		}
 	}
 
-	if f.fn > rq.readFrameTip+rq.size-1 {
-		log.Debugf("Near corruption incident??")
+	if f.fn > readFrameTip+rq.size-1 {
+		log.Debugf("Near corruption incident?? %v vs the max peek of %v (frametip %d)", f.fn, readFrameTip+rq.size-1, readFrameTip)
 		return // Nope! this will corrupt the buffer
 	}
 
@@ -94,22 +98,6 @@ func (rq *receiveQueue) tryAdd(f *frame) bool {
 	return false
 }
 
-func (rq *receiveQueue) getHiLoFrameNumber() (high uint64, low uint64, empty bool) {
-	low = math.MaxUint64 - 1
-	empty = true
-	for _, v := range rq.buf {
-		if v.fn > minFrameNumber {
-			if v.fn > high {
-				high = v.fn
-			} else if low > v.fn {
-				low = v.fn
-				empty = false
-			}
-		}
-	}
-	return high, low, empty
-}
-
 func (rq *receiveQueue) read(b []byte) (int, error) {
 	for {
 		if rq.rp != 0 {
@@ -128,12 +116,27 @@ func (rq *receiveQueue) read(b []byte) (int, error) {
 		<-rq.availableFrameChannel
 	}
 
+	rq.readLockmaybeidk.Lock()
+	defer rq.readLockmaybeidk.Unlock()
+
 	totalN := 0
 	cur := rq.buf[rq.rp].bytes
 	for cur != nil && totalN < len(b) {
-		atomic.StoreUint64(&rq.readFrameTip, rq.buf[rq.rp].fn)
+		oldFrameTip := atomic.LoadUint64(&rq.readFrameTip)
+		// fmt.Printf("About to read frame %d\n", rq.buf[rq.rp].fn)
+		if (rq.buf[rq.rp].fn != oldFrameTip+1) && (rq.buf[rq.rp].fn != oldFrameTip) && oldFrameTip != 0 {
+			log.Errorf("Woops corrupted output, wow I'm dumb %v vs %v (The crash happened at idx = %d)", rq.buf[rq.rp].fn, oldFrameTip+1, rq.rp)
+			fmt.Printf("All Buffers: ")
+			for idx, v := range rq.buf {
+				fmt.Printf("\t[%d]fn %d, [%d]byte\n", idx, v.fn, len(v.bytes))
+			}
+			rq.close()
+			return 0, ErrClosed
+		}
 		n := copy(b[totalN:], cur)
 		if n == len(cur) {
+			// fmt.Printf("Finished with read frame %d\n", rq.buf[rq.rp].fn) // BCC DEBUG
+			atomic.StoreUint64(&rq.readFrameTip, rq.buf[rq.rp].fn)
 			pool.Put(cur)
 			rq.buf[rq.rp].bytes = nil
 			rq.rp = (rq.rp + 1) % rq.size
@@ -141,6 +144,7 @@ func (rq *receiveQueue) read(b []byte) (int, error) {
 			// The frames in the ring buffer are never overridden, so we can
 			// safely update the bytes to reflect the next read position.
 			rq.buf[rq.rp].bytes = cur[n:]
+			// fmt.Printf("Partial read frame %d\n", rq.buf[rq.rp].fn) // BCC DEBUG
 		}
 		totalN += n
 		cur = rq.buf[rq.rp].bytes

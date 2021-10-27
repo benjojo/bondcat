@@ -105,6 +105,24 @@ func (mpd *mpDialer) DialContext(ctx context.Context) (net.Conn, error) {
 		}
 		if cid == zeroCID {
 			bc = newMPConn(newCID)
+			go func() {
+				for {
+					time.Sleep(time.Second)
+					bc.pendingAckMu.RLock()
+					oldest := time.Duration(0)
+					oldestFN := uint64(0)
+					for fn, frame := range bc.pendingAckMap {
+						if time.Since(frame.sentAt) > oldest {
+							oldest = time.Since(frame.sentAt)
+							oldestFN = fn
+						}
+					}
+					bc.pendingAckMu.RUnlock()
+					if oldest > time.Second {
+						fmt.Printf("Frame %d has not been acked for %v\n", oldestFN, oldest)
+					}
+				}
+			}()
 		}
 		bc.add(fmt.Sprintf("%x(%s)", newCID, d.label), conn, true, probeStart, d)
 		return newCID, true

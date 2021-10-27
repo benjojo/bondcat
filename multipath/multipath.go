@@ -116,8 +116,6 @@ func (f *sendFrame) isDataFrame() bool {
 func (f *sendFrame) release() {
 	if atomic.CompareAndSwapInt32(f.released, 0, 1) {
 		pool.Put(f.buf)
-	} else {
-		log.Error("Release already released buffer!")
 	}
 }
 
@@ -160,10 +158,15 @@ func (D DevZero) Read(b []byte) (int, error) {
 	for k := range b {
 		b[k] = 0x00
 	}
+	transmitted := 16000
+	if len(b) < transmitted {
+		transmitted = len(b)
+	}
+
 	before := D.C.TX
-	D.C.TX += uint64(len(b))
+	D.C.TX += uint64(transmitted)
 	if before/1e8 != D.C.TX/1e8 {
 		log.Debugf("TX'd %d bytes", D.C.TX)
 	}
-	return len(b), nil
+	return transmitted, nil
 }
