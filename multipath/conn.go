@@ -112,13 +112,20 @@ func (bc *mpConn) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
-func (bc *mpConn) retransmit(frame *sendFrame) {
+func (bc *mpConn) retransmit(frame *sendFrame, avoidSF *subflow) {
 	frame.retransmissions++
 	subflows := bc.sortedSubflows()
 	ticker := time.NewTimer(time.Minute)
 	for {
 		abort := false
 		for _, sf := range subflows {
+			if len(subflows) != 1 {
+				//
+				if sf == avoidSF {
+					continue
+				}
+			}
+
 			select {
 			case <-sf.chClose:
 				continue
@@ -189,7 +196,7 @@ func (bc *mpConn) retransmitLoop() {
 		RetransmitFrames := make([]pendingAck, 0)
 		for fn, frame := range bc.pendingAckMap {
 			if time.Since(frame.sentAt) > frame.outboundSf.retransTimer() {
-				if bc.isPendingAck(fn) {
+				if bc.pendingAckMap[fn] != nil {
 					RetransmitFrames = append(RetransmitFrames, *frame)
 				}
 			}
@@ -205,8 +212,7 @@ func (bc *mpConn) retransmitLoop() {
 			if bc.isPendingAck(frame.fn) {
 				// No ack means the subflow fails or has a longer RTT
 				// log.Errorf("Retransmitting! %#v", frame.fn)
-				bc.pendingAckMap[uint64(frame.fn)].outboundSf.updateRTT(time.Since(frame.sentAt))
-				go bc.retransmit(sendframe)
+				go bc.retransmit(sendframe, frame.outboundSf)
 			} else {
 				// It is ok to release buffer here as the frame will never
 				// be retransmitted again.

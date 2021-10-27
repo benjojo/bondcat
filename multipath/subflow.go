@@ -197,7 +197,7 @@ func (sf *subflow) sendLoop() {
 				// TODO: For temporary errors, maybe send the subflow to the
 				// back of the line instead of closing it.
 				if frame.isDataFrame() {
-					go sf.mpc.retransmit(frame)
+					go sf.mpc.retransmit(frame, sf)
 				}
 
 				if !strings.Contains(err.Error(), "i/o timeout") {
