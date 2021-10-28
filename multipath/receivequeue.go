@@ -148,7 +148,6 @@ func (rq *receiveQueue) read(b []byte) (int, error) {
 		}
 		totalN += n
 		cur = rq.buf[rq.rp].bytes
-		rq.buf[rq.rp].bccDebugIveBeenHere = true
 	}
 	return totalN, nil
 }

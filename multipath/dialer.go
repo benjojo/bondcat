@@ -119,7 +119,7 @@ func (mpd *mpDialer) DialContext(ctx context.Context) (net.Conn, error) {
 					}
 					bc.pendingAckMu.RUnlock()
 					if oldest > time.Second {
-						fmt.Printf("Frame %d has not been acked for %v\n", oldestFN, oldest)
+						log.Debugf("Frame %d has not been acked for %v\n", oldestFN, oldest)
 					}
 				}
 			}()

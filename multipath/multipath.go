@@ -84,9 +84,8 @@ var (
 
 type connectionID uuid.UUID
 type frame struct {
-	fn                  uint64
-	bytes               []byte
-	bccDebugIveBeenHere bool
+	fn    uint64
+	bytes []byte
 }
 
 type sendFrame struct {
@@ -160,7 +159,7 @@ func (D DevZero) Read(b []byte) (int, error) {
 		b[k] = 0x00
 	}
 
-	transmitted := rand.Intn(32000)
+	transmitted := rand.Intn(4096)
 	if len(b) < transmitted {
 		transmitted = len(b)
 	}

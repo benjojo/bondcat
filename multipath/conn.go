@@ -1,7 +1,6 @@
 package multipath
 
 import (
-	"fmt"
 	"net"
 	"sort"
 	"sync"
@@ -46,7 +45,7 @@ func (bc *mpConn) Write(b []byte) (n int, err error) {
 		bc.pendingAckMu.RUnlock()
 		if inflight > 500 {
 			time.Sleep(time.Millisecond * 100)
-			fmt.Printf("too many inflights\n")
+			// fmt.Printf("too many inflights\n")
 			continue
 		}
 
@@ -204,7 +203,7 @@ func (bc *mpConn) retransmitLoop() {
 		bc.pendingAckMu.RUnlock()
 
 		sort.Slice(RetransmitFrames, func(i, j int) bool {
-			return RetransmitFrames[i].fn > RetransmitFrames[j].fn
+			return RetransmitFrames[i].fn < RetransmitFrames[j].fn
 		})
 
 		for _, frame := range RetransmitFrames {

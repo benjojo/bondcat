@@ -73,6 +73,7 @@ func (sf *subflow) readLoop() (err error) {
 	r := byteReader{Reader: sf.conn}
 	go sf.readLoopFrames(ch, err, r)
 	probeTimer := time.NewTimer(randomize(probeInterval))
+	go sf.probe()
 	for {
 		select {
 		case frame := <-ch: // Fed by readLoopFrames
@@ -97,7 +98,7 @@ func (sf *subflow) readLoopFrames(ch chan *frame, err error, r byteReader) bool 
 		for {
 			time.Sleep(time.Second)
 			if time.Since(lastRead) > time.Second*5 {
-				log.Debugf("readLoopFrames [%v] stuck for %v", sf.to, time.Since(lastRead))
+				// log.Debugf("readLoopFrames [%v] stuck for %v", sf.to, time.Since(lastRead))
 			}
 		}
 	}()
@@ -153,14 +154,6 @@ func (sf *subflow) readLoopFrames(ch chan *frame, err error, r byteReader) bool 
 }
 
 func (sf *subflow) sendLoop() {
-	go func() {
-		for {
-			time.Sleep(time.Second)
-			d := sf.retransTimer()
-			fmt.Printf("Tranmit timer for %v = %v\n", sf.to, d)
-		}
-	}()
-
 	for {
 		select {
 		case <-sf.chClose:
