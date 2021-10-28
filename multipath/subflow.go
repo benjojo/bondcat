@@ -69,7 +69,7 @@ func startSubflow(to string, c net.Conn, mpc *mpConn, clientSide bool, probeStar
 }
 
 func (sf *subflow) readLoop() (err error) {
-	ch := make(chan *frame)
+	ch := make(chan *rxFrame)
 	r := byteReader{Reader: sf.conn}
 	go sf.readLoopFrames(ch, err, r)
 	probeTimer := time.NewTimer(randomize(probeInterval))
@@ -92,7 +92,7 @@ func (sf *subflow) readLoop() (err error) {
 	}
 }
 
-func (sf *subflow) readLoopFrames(ch chan *frame, err error, r byteReader) bool {
+func (sf *subflow) readLoopFrames(ch chan *rxFrame, err error, r byteReader) bool {
 	lastRead := time.Now()
 	go func() {
 		for {
@@ -141,7 +141,7 @@ func (sf *subflow) readLoopFrames(ch chan *frame, err error, r byteReader) bool 
 		}
 
 		// sf.ack(fn)
-		ch <- &frame{fn: fn, bytes: buf}
+		ch <- &rxFrame{fn: fn, bytes: buf}
 		sf.tracker.OnRecv(sz)
 		select {
 		case <-sf.chClose:

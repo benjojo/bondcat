@@ -12,7 +12,7 @@ func TestRead(t *testing.T) {
 	fn := uint64(minFrameNumber - 1)
 	addFrame := func(s string) {
 		fn++
-		q.add(&frame{fn: fn, bytes: []byte(s)}, nil)
+		q.add(&rxFrame{fn: fn, bytes: []byte(s)}, nil)
 	}
 	shouldRead := func(s string) {
 		b := make([]byte, 3)
@@ -28,7 +28,7 @@ func TestRead(t *testing.T) {
 	shouldRead("cd")
 	addFrame("abcd")
 	// adding the same frame number again should have no effect
-	q.add(&frame{fn: fn, bytes: []byte("1234")}, nil)
+	q.add(&rxFrame{fn: fn, bytes: []byte("1234")}, nil)
 	shouldRead("abc")
 	shouldRead("d")
 
@@ -65,7 +65,7 @@ func TestRead(t *testing.T) {
 	shouldWaitBeforeRead(delay, "abc")
 
 	// frames can be added out of order
-	q.add(&frame{fn: fn + 2, bytes: []byte("1234")}, nil)
+	q.add(&rxFrame{fn: fn + 2, bytes: []byte("1234")}, nil)
 	time.AfterFunc(delay, func() {
 		addFrame("abcd")
 	})

@@ -15,7 +15,7 @@ import (
 // that the frame number is sequential, so when a new frame arrives, it is
 // placed at buf[frameNumber % size].
 type receiveQueue struct {
-	buf  []frame
+	buf  []rxFrame
 	size uint64
 	// rp stands for read pointer, point to the index of the frame containing
 	// data yet to be read.
@@ -30,7 +30,7 @@ type receiveQueue struct {
 
 func newReceiveQueue(size int) *receiveQueue {
 	rq := &receiveQueue{
-		buf:                   make([]frame, size),
+		buf:                   make([]rxFrame, size),
 		size:                  uint64(size),
 		rp:                    minFrameNumber % uint64(size), // frame number starts with minFrameNumber, so should the read pointer
 		availableFrameChannel: make(chan bool),
@@ -39,7 +39,7 @@ func newReceiveQueue(size int) *receiveQueue {
 	return rq
 }
 
-func (rq *receiveQueue) add(f *frame, sf *subflow) {
+func (rq *receiveQueue) add(f *rxFrame, sf *subflow) {
 
 	select {
 	case rq.availableFrameChannel <- true:
@@ -73,7 +73,7 @@ func (rq *receiveQueue) add(f *frame, sf *subflow) {
 
 }
 
-func (rq *receiveQueue) tryAdd(f *frame) bool {
+func (rq *receiveQueue) tryAdd(f *rxFrame) bool {
 	idx := f.fn % rq.size
 	if rq.buf[idx].bytes == nil {
 		// empty slot
