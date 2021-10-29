@@ -160,7 +160,7 @@ func (sf *subflow) sendLoop() {
 			return
 		case frame := <-sf.sendQueue:
 			if frame.retransmissions != 0 {
-				log.Debugf("Retransmit on %d, for the %dth time\n", frame.fn, frame.retransmissions)
+				log.Debugf("Retransmit on %d, for the %dth time", frame.fn, frame.retransmissions)
 			}
 			sf.addPendingAck(frame)
 
@@ -241,7 +241,7 @@ func (sf *subflow) gotACK(fn uint64) {
 		delete(sf.mpc.pendingAckMap, fn)
 		sf.mpc.pendingAckMu.Unlock()
 	} else {
-		log.Errorf("unsolicited ack for frame %d from %s", fn, sf.to)
+		// log.Errorf("unsolicited ack for frame %d from %s", fn, sf.to)
 		sf.mpc.pendingAckMu.RUnlock()
 		return
 	}

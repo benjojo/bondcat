@@ -21,6 +21,7 @@ type receiveQueue struct {
 	// data yet to be read.
 	rp                    uint64
 	availableFrameChannel chan bool
+	readNotifyChannel     chan bool
 	readDeadline          time.Time
 	deadlineLock          sync.Mutex
 	closed                uint32 // 1 == true, 0 == false
@@ -34,6 +35,7 @@ func newReceiveQueue(size int) *receiveQueue {
 		size:                  uint64(size),
 		rp:                    minFrameNumber % uint64(size), // frame number starts with minFrameNumber, so should the read pointer
 		availableFrameChannel: make(chan bool),
+		readNotifyChannel:     make(chan bool),
 		readLockmaybeidk:      &sync.Mutex{},
 	}
 	return rq
@@ -41,6 +43,34 @@ func newReceiveQueue(size int) *receiveQueue {
 
 func (rq *receiveQueue) add(f *rxFrame, sf *subflow) {
 
+	select {
+	case rq.availableFrameChannel <- true:
+	default:
+	}
+	// Another thing to protect against, is that we might be
+	// locally blocked on a full receiveQueue. If that is the
+	// case then we don't want to return instantly from this
+	// function since that will just case retransmits to fire
+	// over and over again, causing mass bandwidth loss.
+	// Instead let's quickly check if we have all of the data we need
+	// to read, and if we do, hang until we don't have that problem anymore
+	if rq.isFull() {
+		// deDeadlock := time.NewTicker(time.Second)
+		for {
+			var abort bool
+			select {
+			case <-rq.readNotifyChannel:
+				if !rq.isFull() {
+					abort = true
+					break
+				}
+			}
+			if abort {
+				break
+			}
+		}
+		// deDeadlock.Stop()
+	}
 	select {
 	case rq.availableFrameChannel <- true:
 	default:
@@ -55,7 +85,7 @@ func (rq *receiveQueue) add(f *rxFrame, sf *subflow) {
 		}
 	}
 
-	if f.fn > readFrameTip+rq.size-1 {
+	if f.fn > readFrameTip+rq.size {
 		log.Debugf("Near corruption incident?? %v vs the max peek of %v (frametip %d)", f.fn, readFrameTip+rq.size-1, readFrameTip)
 		return // Nope! this will corrupt the buffer
 	}
@@ -71,6 +101,28 @@ func (rq *receiveQueue) add(f *rxFrame, sf *subflow) {
 		return
 	}
 
+}
+
+func (rq *receiveQueue) isFull() bool {
+	printFull := false
+	for i := uint64(0); i < rq.size; i++ {
+		expectedFrameNumber := rq.readFrameTip + i
+		idx := expectedFrameNumber % rq.size
+
+		if rq.buf[idx].fn != expectedFrameNumber {
+			if printFull {
+				log.Debugf("receiveQueue is %d%% full!", int((float32(i) / float32(rq.size) * 100)))
+			}
+			return false
+		}
+
+		if i == rq.size/2 {
+			printFull = true
+		}
+	}
+
+	log.Debugf("my receiveQueue is full.")
+	return true
 }
 
 func (rq *receiveQueue) tryAdd(f *rxFrame) bool {
@@ -113,6 +165,11 @@ func (rq *receiveQueue) read(b []byte) (int, error) {
 			return 0, context.DeadlineExceeded
 		}
 		// fmt.Printf("Waiting on <-rq.availableFrameChannel\n")
+
+		select {
+		case rq.readNotifyChannel <- true:
+		default:
+		}
 		<-rq.availableFrameChannel
 	}
 
@@ -149,6 +206,12 @@ func (rq *receiveQueue) read(b []byte) (int, error) {
 		totalN += n
 		cur = rq.buf[rq.rp].bytes
 	}
+
+	select {
+	case rq.readNotifyChannel <- true:
+	default:
+	}
+
 	return totalN, nil
 }
 
