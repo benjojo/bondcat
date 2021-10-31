@@ -162,6 +162,10 @@ func (sf *subflow) sendLoop() {
 			if frame.retransmissions != 0 {
 				log.Debugf("Retransmit on %d, for the %dth time", frame.fn, frame.retransmissions)
 			}
+			if frame.sentVia == nil {
+				frame.sentVia = make([]transmissionDatapoint, 0)
+			}
+			frame.sentVia = append(frame.sentVia, transmissionDatapoint{sf, time.Now()})
 			sf.addPendingAck(frame)
 
 			// d := sf.retransTimer()
@@ -179,18 +183,32 @@ func (sf *subflow) sendLoop() {
 			// 	}
 			// })
 
-			sf.conn.SetWriteDeadline(time.Now().Add(sf.retransTimer() * 4))
+			// Todo: Either implement retries for this, or don't have it, can we survive without it?
+			// sf.conn.SetWriteDeadline(time.Now().Add(sf.retransTimer() * 4))
 			n, err := sf.conn.Write(frame.buf)
-			select {
-			case sf.mpc.writerMaybeReady <- true:
-			default:
+			for {
+				// wake them all up
+				var abort bool
+				select {
+				case sf.mpc.writerMaybeReady <- true:
+				default:
+					abort = true
+				}
+				if abort {
+					break
+				}
 			}
+
 			if err != nil {
 				log.Debugf("failed to write frame %d to %s: %v", frame.fn, sf.to, err)
 				// TODO: For temporary errors, maybe send the subflow to the
 				// back of the line instead of closing it.
+				if n != 0 && len(frame.buf) != n {
+					log.Errorf("oh shit? We may have corrupted the output %#v vs %#v", n, len(frame.buf))
+				}
+
 				if frame.isDataFrame() {
-					go sf.mpc.retransmit(frame, sf)
+					go sf.mpc.retransmit(frame)
 				}
 
 				if !strings.Contains(err.Error(), "i/o timeout") {

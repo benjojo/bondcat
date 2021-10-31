@@ -111,7 +111,7 @@ func (rq *receiveQueue) isFull() bool {
 
 		if rq.buf[idx].fn != expectedFrameNumber {
 			if printFull {
-				log.Debugf("receiveQueue is %d%% full!", int((float32(i) / float32(rq.size) * 100)))
+				// log.Debugf("receiveQueue is %d%% full! (%d/%d)", int((float32(i) / float32(rq.size) * 100)), i, rq.size)
 			}
 			return false
 		}
@@ -121,7 +121,7 @@ func (rq *receiveQueue) isFull() bool {
 		}
 	}
 
-	log.Debugf("my receiveQueue is full.")
+	// log.Debugf("my receiveQueue is full.")
 	return true
 }
 

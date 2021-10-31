@@ -87,12 +87,19 @@ type rxFrame struct {
 	bytes []byte
 }
 
+type transmissionDatapoint struct {
+	sf     *subflow
+	txTime time.Time
+}
+
 type sendFrame struct {
-	fn              uint64
-	sz              uint64
-	buf             []byte
-	released        *int32 // 1 == true; 0 == false. Use pointer so copied object still references the same address, as buf does
-	retransmissions int
+	fn                 uint64
+	sz                 uint64
+	buf                []byte
+	released           *int32 // 1 == true; 0 == false. Use pointer so copied object still references the same address, as buf does
+	retransmissions    int
+	sentVia            []transmissionDatapoint // TODO!!!! Nil if it's not been retransmitted yet, otherwise contains the subflows it's already been written to.
+	beingRetransmitted uint64
 }
 
 func composeFrame(fn uint64, b []byte) *sendFrame {

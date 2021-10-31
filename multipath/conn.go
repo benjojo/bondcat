@@ -111,27 +111,58 @@ func (bc *mpConn) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
-func (bc *mpConn) retransmit(frame *sendFrame, avoidSF *subflow) {
-	frame.retransmissions++
+func (bc *mpConn) retransmit(frame *sendFrame) {
+	if atomic.LoadUint64(&frame.beingRetransmitted) == 1 {
+		return
+	}
+	atomic.StoreUint64(&frame.beingRetransmitted, 1)
+	defer func() {
+		atomic.StoreUint64(&frame.beingRetransmitted, 0)
+	}()
+
 	subflows := bc.sortedSubflows()
 	ticker := time.NewTimer(time.Minute)
+
+	if frame.retransmissions > 4 {
+		frame.isDataFrame() // debugging point, sorry this can be removed in prod
+	}
+
+	alreadyTransmittedOnAllSubflows := false
 	for {
 		abort := false
 		for _, sf := range subflows {
-			if len(subflows) != 1 {
-				//
-				if sf == avoidSF {
-					continue
+
+			// let's avoid re-sending a frame down the same socket twice.
+			// Since at best, it just double sends a frame into the send buffer
+			// and at worst it blocks other frames from entering a send buffer.
+			skipSF := false
+			for _, avoidSF := range frame.sentVia {
+				if sf == avoidSF.sf {
+					if time.Since(avoidSF.txTime) < time.Second {
+						skipSF = true
+					}
 				}
+			}
+			if skipSF {
+				// Fully abort this retransmit
+				abort = true
+				alreadyTransmittedOnAllSubflows = true
+				continue
 			}
 
 			select {
 			case <-sf.chClose:
 				continue
 			case sf.sendQueue <- frame:
+				frame.retransmissions++
 				log.Debugf("retransmitted frame %d via %s", frame.fn, sf.to)
+				if frame.sentVia == nil {
+					frame.sentVia = make([]transmissionDatapoint, 0)
+				}
+				frame.sentVia = append(frame.sentVia, transmissionDatapoint{sf, time.Now()})
 				return
 			case <-ticker.C:
+				alreadyTransmittedOnAllSubflows = false
 				abort = true
 				break
 			}
@@ -142,8 +173,11 @@ func (bc *mpConn) retransmit(frame *sendFrame, avoidSF *subflow) {
 		<-bc.writerMaybeReady
 	}
 
-	log.Tracef("frame %d is being retransmitted on all subflows of %x, give up", frame.fn, bc.cid)
-	frame.release()
+	if !alreadyTransmittedOnAllSubflows {
+		log.Debugf("frame %d is being retransmitted on all subflows of %x", frame.fn, bc.cid)
+	}
+
+	// frame.release() // Commented out since it's not clear that this is needed anymore.
 	return
 }
 
@@ -211,7 +245,7 @@ func (bc *mpConn) retransmitLoop() {
 			if bc.isPendingAck(frame.fn) {
 				// No ack means the subflow fails or has a longer RTT
 				// log.Errorf("Retransmitting! %#v", frame.fn)
-				go bc.retransmit(sendframe, frame.outboundSf)
+				go bc.retransmit(sendframe)
 			} else {
 				// It is ok to release buffer here as the frame will never
 				// be retransmitted again.
