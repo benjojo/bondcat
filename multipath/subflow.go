@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/getlantern/ema"
@@ -25,14 +26,15 @@ type subflow struct {
 	conn net.Conn
 	mpc  *mpConn
 
-	chClose       chan struct{}
-	closeOnce     sync.Once
-	sendQueue     chan *sendFrame
-	pendingPing   *pendingAck
-	muPendingPing sync.RWMutex
-	emaRTT        *ema.EMA
-	tracker       StatsTracker
-	lastWrite     time.Time
+	chClose             chan struct{}
+	closeOnce           sync.Once
+	sendQueue           chan *sendFrame
+	pendingPing         *pendingAck
+	muPendingPing       sync.RWMutex
+	emaRTT              *ema.EMA
+	tracker             StatsTracker
+	lastWrite           time.Time
+	actuallyBusyOnWrite uint64
 }
 
 func startSubflow(to string, c net.Conn, mpc *mpConn, clientSide bool, probeStart time.Time, tracker StatsTracker) *subflow {
@@ -162,6 +164,11 @@ func (sf *subflow) sendLoop() {
 			if frame.retransmissions != 0 {
 				log.Debugf("Retransmit on %d, for the %dth time", frame.fn, frame.retransmissions)
 			}
+			if *frame.released == 1 {
+				log.Errorf("Tried to send a frame that has already been released! Frame Number: %v", frame.fn)
+				sf.mpc.writerMaybeReady <- true
+				continue
+			}
 			if frame.sentVia == nil {
 				frame.sentVia = make([]transmissionDatapoint, 0)
 			}
@@ -185,10 +192,12 @@ func (sf *subflow) sendLoop() {
 
 			// Todo: Either implement retries for this, or don't have it, can we survive without it?
 			// sf.conn.SetWriteDeadline(time.Now().Add(sf.retransTimer() * 4))
+			atomic.StoreUint64(&sf.actuallyBusyOnWrite, 1)
 			n, err := sf.conn.Write(frame.buf)
+			atomic.StoreUint64(&sf.actuallyBusyOnWrite, 0)
+			var abort bool
 			for {
 				// wake them all up
-				var abort bool
 				select {
 				case sf.mpc.writerMaybeReady <- true:
 				default:
@@ -197,6 +206,15 @@ func (sf *subflow) sendLoop() {
 				if abort {
 					break
 				}
+			}
+			// only wake up one re-transmitter, to better control the possible hored of them
+			select {
+			case sf.mpc.tryRetransmit <- true:
+			default:
+			}
+
+			if abort {
+				frame.isDataFrame() // hook point
 			}
 
 			if err != nil {

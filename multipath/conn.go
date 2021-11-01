@@ -16,6 +16,7 @@ type mpConn struct {
 	recvQueue        *receiveQueue
 	closed           uint32 // 1 == true, 0 == false
 	writerMaybeReady chan bool
+	tryRetransmit    chan bool
 
 	pendingAckMap map[uint64]*pendingAck
 	pendingAckMu  *sync.RWMutex
@@ -26,6 +27,7 @@ func newMPConn(cid connectionID) *mpConn {
 		lastFN:           minFrameNumber - 1,
 		recvQueue:        newReceiveQueue(recieveQueueLength),
 		writerMaybeReady: make(chan bool, 1),
+		tryRetransmit:    make(chan bool, 1),
 		pendingAckMap:    make(map[uint64]*pendingAck),
 		pendingAckMu:     &sync.RWMutex{},
 	}
@@ -50,6 +52,12 @@ func (bc *mpConn) Write(b []byte) (n int, err error) {
 		}
 
 		for _, sf := range bc.sortedSubflows() {
+
+			if atomic.LoadUint64(&sf.actuallyBusyOnWrite) == 1 {
+				// Avoid a possibly blocked writer for a retransmit
+				continue
+			}
+
 			select {
 			case sf.sendQueue <- frame:
 				return len(b), nil
@@ -121,7 +129,7 @@ func (bc *mpConn) retransmit(frame *sendFrame) {
 	}()
 
 	subflows := bc.sortedSubflows()
-	ticker := time.NewTimer(time.Minute)
+	// ticker := time.NewTimer(time.Minute)
 
 	if frame.retransmissions > 4 {
 		frame.isDataFrame() // debugging point, sorry this can be removed in prod
@@ -130,7 +138,15 @@ func (bc *mpConn) retransmit(frame *sendFrame) {
 	alreadyTransmittedOnAllSubflows := false
 	for {
 		abort := false
+		if bc.closed == 1 {
+			return
+		}
+
 		for _, sf := range subflows {
+			if atomic.LoadUint64(&sf.actuallyBusyOnWrite) == 1 {
+				// Avoid a possibly blocked writer for a retransmit
+				continue
+			}
 
 			// let's avoid re-sending a frame down the same socket twice.
 			// Since at best, it just double sends a frame into the send buffer
@@ -161,16 +177,18 @@ func (bc *mpConn) retransmit(frame *sendFrame) {
 				}
 				frame.sentVia = append(frame.sentVia, transmissionDatapoint{sf, time.Now()})
 				return
-			case <-ticker.C:
-				alreadyTransmittedOnAllSubflows = false
-				abort = true
-				break
+			default:
+
+				// case <-ticker.C:
+				// 	alreadyTransmittedOnAllSubflows = false
+				// 	abort = true
+				// 	break
 			}
 		}
 		if abort {
 			break
 		}
-		<-bc.writerMaybeReady
+		<-bc.tryRetransmit
 	}
 
 	if !alreadyTransmittedOnAllSubflows {
@@ -245,7 +263,9 @@ func (bc *mpConn) retransmitLoop() {
 			if bc.isPendingAck(frame.fn) {
 				// No ack means the subflow fails or has a longer RTT
 				// log.Errorf("Retransmitting! %#v", frame.fn)
-				go bc.retransmit(sendframe)
+				if sendframe.beingRetransmitted == 0 {
+					go bc.retransmit(sendframe)
+				}
 			} else {
 				// It is ok to release buffer here as the frame will never
 				// be retransmitted again.

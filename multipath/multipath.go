@@ -48,6 +48,7 @@ package multipath
 import (
 	"bytes"
 	"errors"
+	"math/rand"
 	"sync/atomic"
 	"time"
 
@@ -168,8 +169,8 @@ func (D DevZero) Read(b []byte) (int, error) {
 		b[k] = 0x00
 	}
 
-	// transmitted := rand.Intn(4096)
-	transmitted := len(b)
+	transmitted := rand.Intn(4096)
+	// transmitted := len(b)
 	if len(b) < transmitted {
 		transmitted = len(b)
 	}
