@@ -47,7 +47,7 @@ func (bc *mpConn) Write(b []byte) (n int, err error) {
 		bc.pendingAckMu.RUnlock()
 		if inflight > 500 {
 			time.Sleep(time.Millisecond * 100)
-			// fmt.Printf("too many inflights\n")
+			log.Tracef("too many inflights")
 			continue
 		}
 
@@ -129,11 +129,6 @@ func (bc *mpConn) retransmit(frame *sendFrame) {
 	}()
 
 	subflows := bc.sortedSubflows()
-	// ticker := time.NewTimer(time.Minute)
-
-	if frame.retransmissions > 4 {
-		frame.isDataFrame() // debugging point, sorry this can be removed in prod
-	}
 
 	alreadyTransmittedOnAllSubflows := false
 	for {
@@ -178,11 +173,6 @@ func (bc *mpConn) retransmit(frame *sendFrame) {
 				frame.sentVia = append(frame.sentVia, transmissionDatapoint{sf, time.Now()})
 				return
 			default:
-
-				// case <-ticker.C:
-				// 	alreadyTransmittedOnAllSubflows = false
-				// 	abort = true
-				// 	break
 			}
 		}
 		if abort {
@@ -195,7 +185,6 @@ func (bc *mpConn) retransmit(frame *sendFrame) {
 		log.Debugf("frame %d is being retransmitted on all subflows of %x", frame.fn, bc.cid)
 	}
 
-	// frame.release() // Commented out since it's not clear that this is needed anymore.
 	return
 }
 
@@ -205,8 +194,7 @@ func (bc *mpConn) sortedSubflows() []*subflow {
 	copy(subflows, bc.subflows)
 	bc.muSubflows.RUnlock()
 	sort.Slice(subflows, func(i, j int) bool {
-		// return subflows[i].lastWrite.After(subflows[j].lastWrite)
-		return subflows[i].emaRTT.Get() < subflows[j].emaRTT.Get()
+		return subflows[i].getRTT() < subflows[j].getRTT()
 	})
 	return subflows
 }

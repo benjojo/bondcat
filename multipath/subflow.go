@@ -5,7 +5,6 @@ import (
 	"io"
 	"math/rand"
 	"net"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +20,7 @@ type pendingAck struct {
 	outboundSf *subflow
 	framePtr   *sendFrame
 }
+
 type subflow struct {
 	to   string
 	conn net.Conn
@@ -29,22 +29,22 @@ type subflow struct {
 	chClose             chan struct{}
 	closeOnce           sync.Once
 	sendQueue           chan *sendFrame
-	pendingPing         *pendingAck
+	pendingPing         *pendingAck // Only for pings
 	muPendingPing       sync.RWMutex
 	emaRTT              *ema.EMA
 	tracker             StatsTracker
-	lastWrite           time.Time
 	actuallyBusyOnWrite uint64
 }
 
 func startSubflow(to string, c net.Conn, mpc *mpConn, clientSide bool, probeStart time.Time, tracker StatsTracker) *subflow {
 	sf := &subflow{
-		to:          to,
-		conn:        c,
-		mpc:         mpc,
-		chClose:     make(chan struct{}),
-		sendQueue:   make(chan *sendFrame, 1),
-		pendingPing: nil, // Only for pings
+		to:        to,
+		conn:      c,
+		mpc:       mpc,
+		chClose:   make(chan struct{}),
+		sendQueue: make(chan *sendFrame, 1),
+		// pendingPing is used for storing the subflow's ping data. Handy since pings are subflow dependent
+		pendingPing: nil,
 		emaRTT:      ema.NewDuration(longRTT, rttAlpha),
 		tracker:     tracker,
 	}
@@ -74,8 +74,10 @@ func (sf *subflow) readLoop() (err error) {
 	ch := make(chan *rxFrame)
 	r := byteReader{Reader: sf.conn}
 	go sf.readLoopFrames(ch, err, r)
+
 	probeTimer := time.NewTimer(randomize(probeInterval))
-	go sf.probe()
+	go sf.probe() // Force a ping out right away, to calibrate our own timings
+
 	for {
 		select {
 		case frame := <-ch: // Fed by readLoopFrames
@@ -95,18 +97,10 @@ func (sf *subflow) readLoop() (err error) {
 }
 
 func (sf *subflow) readLoopFrames(ch chan *rxFrame, err error, r byteReader) bool {
-	lastRead := time.Now()
-	go func() {
-		for {
-			time.Sleep(time.Second)
-			if time.Since(lastRead) > time.Second*5 {
-				// log.Debugf("readLoopFrames [%v] stuck for %v", sf.to, time.Since(lastRead))
-			}
-		}
-	}()
-
 	defer close(ch)
 	for {
+		// The is the core "reactor" where frames are read. The frame format
+		// can be found in the top of multipath.go
 		var sz, fn uint64
 		sz, err = ReadVarInt(r)
 		if err != nil {
@@ -124,6 +118,7 @@ func (sf *subflow) readLoopFrames(ch chan *rxFrame, err error, r byteReader) boo
 		}
 		log.Tracef("got frame %d from %s with %d bytes", fn, sf.to, sz)
 		if sz > 1<<20 {
+			// This almost always happens due to frame corruption.
 			log.Errorf("Frame of size %v from %s is impossible", sz, sf.to)
 			sf.close()
 			return true
@@ -135,24 +130,20 @@ func (sf *subflow) readLoopFrames(ch chan *rxFrame, err error, r byteReader) boo
 			sf.close()
 			return true
 		}
-		lastRead = time.Now()
 
 		if fn > (sf.mpc.recvQueue.readFrameTip + sf.mpc.recvQueue.size) {
-			// log.Errorf("Dropped frame that is too far in the future to apply %v vs ", fn, (sf.mpc.recvQueue.readFrameTip + sf.mpc.recvQueue.size))
+			// This frame dropped is too far in the future to apply
 			continue
 		}
 
-		// sf.ack(fn)
 		ch <- &rxFrame{fn: fn, bytes: buf}
 		sf.tracker.OnRecv(sz)
 		select {
 		case <-sf.chClose:
 			return true
 		default:
-
 		}
 	}
-	return false
 }
 
 func (sf *subflow) sendLoop() {
@@ -162,7 +153,7 @@ func (sf *subflow) sendLoop() {
 			return
 		case frame := <-sf.sendQueue:
 			if frame.retransmissions != 0 {
-				log.Debugf("Retransmit on %d, for the %dth time", frame.fn, frame.retransmissions)
+				log.Tracef("Retransmit on %d, for the %dth time", frame.fn, frame.retransmissions)
 			}
 			if *frame.released == 1 {
 				log.Errorf("Tried to send a frame that has already been released! Frame Number: %v", frame.fn)
@@ -175,29 +166,13 @@ func (sf *subflow) sendLoop() {
 			frame.sentVia = append(frame.sentVia, transmissionDatapoint{sf, time.Now()})
 			sf.addPendingAck(frame)
 
-			// d := sf.retransTimer()
-			// // fmt.Printf("The retransmit timer is %v \n", d)
-			// time.AfterFunc(d, func() {
-			// 	if sf.isPendingAck(frame.fn) {
-			// 		// No ack means the subflow fails or has a longer RTT
-			// 		// log.Errorf("Retransmitting! %#v", frame.fn)
-			// 		sf.updateRTT(d)
-			// 		sf.mpc.retransmit(frame)
-			// 	} else {
-			// 		// It is ok to release buffer here as the frame will never
-			// 		// be retransmitted again.
-			// 		frame.release()
-			// 	}
-			// })
-
-			// Todo: Either implement retries for this, or don't have it, can we survive without it?
-			// sf.conn.SetWriteDeadline(time.Now().Add(sf.retransTimer() * 4))
 			atomic.StoreUint64(&sf.actuallyBusyOnWrite, 1)
 			n, err := sf.conn.Write(frame.buf)
 			atomic.StoreUint64(&sf.actuallyBusyOnWrite, 0)
 			var abort bool
 			for {
-				// wake them all up
+				// wake all writers up, since they might have something to send now that we likely
+				// have free capacity.
 				select {
 				case sf.mpc.writerMaybeReady <- true:
 				default:
@@ -207,36 +182,32 @@ func (sf *subflow) sendLoop() {
 					break
 				}
 			}
+
 			// only wake up one re-transmitter, to better control the possible hored of them
 			select {
 			case sf.mpc.tryRetransmit <- true:
 			default:
 			}
 
-			if abort {
-				frame.isDataFrame() // hook point
-			}
-
 			if err != nil {
 				log.Debugf("failed to write frame %d to %s: %v", frame.fn, sf.to, err)
-				// TODO: For temporary errors, maybe send the subflow to the
-				// back of the line instead of closing it.
-				if n != 0 && len(frame.buf) != n {
-					log.Errorf("oh shit? We may have corrupted the output %#v vs %#v", n, len(frame.buf))
-				}
 
 				if frame.isDataFrame() {
 					go sf.mpc.retransmit(frame)
 				}
 
-				if !strings.Contains(err.Error(), "i/o timeout") {
+				if n != 0 && len(frame.buf) != n {
+					log.Tracef("We may have corrupted the output %#v vs %#v", n, len(frame.buf))
+					// In this case, we will not try and write the remaining, and instead we will assume
+					// that writing to the socket again will only make this worse, so aborting the subflow
 					sf.close()
 					return
-				} else {
-					continue
 				}
+
+				sf.close()
+				return
 			}
-			sf.lastWrite = time.Now()
+
 			if n != len(frame.buf) {
 				panic(fmt.Sprintf("expect to write %d bytes on %s, written %d", len(frame.buf), sf.to, n))
 			}
@@ -255,6 +226,12 @@ func (sf *subflow) sendLoop() {
 }
 
 func (sf *subflow) ack(fn uint64) {
+	if sf == nil {
+		// This should only ever happen in testing.
+		log.Debugf("Nil subflow requested to do an ack! (should only happen on tests)")
+		return
+	}
+
 	select {
 	case <-sf.chClose:
 	case sf.sendQueue <- composeFrame(fn, nil):
@@ -277,7 +254,6 @@ func (sf *subflow) gotACK(fn uint64) {
 		delete(sf.mpc.pendingAckMap, fn)
 		sf.mpc.pendingAckMu.Unlock()
 	} else {
-		// log.Errorf("unsolicited ack for frame %d from %s", fn, sf.to)
 		sf.mpc.pendingAckMu.RUnlock()
 		return
 	}
@@ -302,7 +278,12 @@ func (sf *subflow) getRTT() time.Duration {
 	// up-to-date.
 	var realtime time.Duration
 	sf.muPendingPing.RLock()
-	realtime = time.Since(sf.pendingPing.sentAt)
+	if sf.pendingPing != nil {
+		realtime = time.Since(sf.pendingPing.sentAt)
+	} else {
+		sf.muPendingPing.RUnlock()
+		return recorded
+	}
 	sf.muPendingPing.RUnlock()
 	if realtime > recorded {
 		return realtime
@@ -327,7 +308,6 @@ func (sf *subflow) addPendingAck(frame *sendFrame) {
 			sf.mpc.pendingAckMu.Unlock()
 		}
 	}
-
 }
 
 func (sf *subflow) isPendingAck(fn uint64) bool {
@@ -337,7 +317,6 @@ func (sf *subflow) isPendingAck(fn uint64) bool {
 		return sf.mpc.pendingAckMap[fn] != nil
 	}
 	return false
-
 }
 
 func (sf *subflow) probe() {

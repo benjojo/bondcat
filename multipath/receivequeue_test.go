@@ -32,19 +32,6 @@ func TestRead(t *testing.T) {
 	shouldRead("abc")
 	shouldRead("d")
 
-	addFrame("abc")
-	addFrame("abc")
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		shouldRead("abc")
-	}()
-	start := time.Now()
-	addFrame("abc")
-	assert.InDelta(t, time.Since(start), 50*time.Millisecond, float64(20*time.Millisecond),
-		"when receive queue is full, adding frame should wait for available slot")
-	shouldRead("abc")
-	shouldRead("abc")
-
 	shouldWaitBeforeRead := func(d time.Duration, s string) {
 		start := time.Now()
 		b := make([]byte, 3)

@@ -1,5 +1,14 @@
 {
     "configurations": [
+        {
+            "name": "Connect to server",
+            "type": "go",
+            "request": "attach",
+            "mode": "remote",
+            "remotePath": "${workspaceFolder}",
+            "port": 2345,
+            "host": "192.168.2.97"
+        },
     {
         "name": "Launch Package",
         "type": "go",

@@ -5,10 +5,12 @@ import (
 	"flag"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"os"
 	"time"
 
+	"github.com/getlantern/golog"
 	"github.com/getlantern/multipath"
 )
 
@@ -20,7 +22,7 @@ func main() {
 	// portFlag := flag.Int("p", 0, "Port to listen on")
 	flag.Parse()
 	otherArgs := flag.Args()
-	// fmt.Printf(".")
+	golog.SetOutputs(os.Stderr, os.Stderr)
 
 	if *listenFlag {
 		log.Printf("Listening on %v", *listenIPsFlag)
@@ -38,7 +40,7 @@ func main() {
 		}
 
 		go io.Copy(conn, os.Stdin)
-		// io.Copy(os.Stdout, conn)
+		io.Copy(os.Stdout, conn)
 		return
 	}
 
@@ -57,8 +59,16 @@ func main() {
 		log.Fatalf("failed to dial %v", err)
 	}
 
-	go io.Copy(conn, os.Stdin)
-	io.Copy(os.Stdout, conn)
+	DZ := DevZero{
+		C: &Counter{},
+	}
+
+	DZ.C.RX = 0
+
+	// io.Copy(conn, os.Stdin)
+	go io.Copy(os.Stdout, conn)
+	// io.Copy(conn, DZ)
+	io.Copy(conn, os.Stdin)
 	conn.Close()
 }
 
@@ -92,3 +102,44 @@ func (st LogTracker) OnRecv(uint64)           {}
 func (st LogTracker) OnSent(uint64)           {}
 func (st LogTracker) OnRetransmit(uint64)     {}
 func (st LogTracker) UpdateRTT(time.Duration) {}
+
+// ben debug
+
+type Counter struct {
+	RX, TX uint64
+}
+
+type DevZero struct {
+	C *Counter
+}
+
+func (D DevZero) Write(b []byte) (int, error) {
+	before := D.C.RX
+	D.C.RX += uint64(len(b))
+	if before/1e8 != D.C.RX/1e8 {
+		log.Printf("RX'd %d bytes", D.C.RX)
+		if before/1e8 == 10 {
+			time.Sleep(time.Second * 10)
+		}
+	}
+	return len(b), nil
+}
+
+func (D DevZero) Read(b []byte) (int, error) {
+	for k := range b {
+		b[k] = 0x00
+	}
+
+	transmitted := rand.Intn(4096)
+	// transmitted := len(b)
+	if len(b) < transmitted {
+		transmitted = len(b)
+	}
+
+	before := D.C.TX
+	D.C.TX += uint64(transmitted)
+	if before/1e8 != D.C.TX/1e8 {
+		log.Printf("TX'd %d bytes", D.C.TX)
+	}
+	return transmitted, nil
+}

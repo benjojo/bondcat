@@ -18,6 +18,7 @@ import (
 )
 
 func TestE2E(t *testing.T) {
+	// Failing on timeout
 	go func() {
 		http.ListenAndServe("localhost:6060", nil)
 	}()

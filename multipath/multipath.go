@@ -48,7 +48,6 @@ package multipath
 import (
 	"bytes"
 	"errors"
-	"math/rand"
 	"sync/atomic"
 	"time"
 
@@ -83,6 +82,7 @@ var (
 )
 
 type connectionID uuid.UUID
+
 type rxFrame struct {
 	fn    uint64
 	bytes []byte
@@ -99,7 +99,7 @@ type sendFrame struct {
 	buf                []byte
 	released           *int32 // 1 == true; 0 == false. Use pointer so copied object still references the same address, as buf does
 	retransmissions    int
-	sentVia            []transmissionDatapoint // TODO!!!! Nil if it's not been retransmitted yet, otherwise contains the subflows it's already been written to.
+	sentVia            []transmissionDatapoint // Contains the subflows it's already been written to, and when
 	beingRetransmitted uint64
 }
 
@@ -141,44 +141,3 @@ func (st NullTracker) OnRecv(uint64)           {}
 func (st NullTracker) OnSent(uint64)           {}
 func (st NullTracker) OnRetransmit(uint64)     {}
 func (st NullTracker) UpdateRTT(time.Duration) {}
-
-// ben debug
-
-type Counter struct {
-	RX, TX uint64
-}
-
-type DevZero struct {
-	C *Counter
-}
-
-func (D DevZero) Write(b []byte) (int, error) {
-	before := D.C.RX
-	D.C.RX += uint64(len(b))
-	if before/1e8 != D.C.RX/1e8 {
-		log.Debugf("RX'd %d bytes", D.C.RX)
-		if before/1e8 == 10 {
-			time.Sleep(time.Second * 10)
-		}
-	}
-	return len(b), nil
-}
-
-func (D DevZero) Read(b []byte) (int, error) {
-	for k := range b {
-		b[k] = 0x00
-	}
-
-	transmitted := rand.Intn(4096)
-	// transmitted := len(b)
-	if len(b) < transmitted {
-		transmitted = len(b)
-	}
-
-	before := D.C.TX
-	D.C.TX += uint64(transmitted)
-	if before/1e8 != D.C.TX/1e8 {
-		log.Debugf("TX'd %d bytes", D.C.TX)
-	}
-	return transmitted, nil
-}
