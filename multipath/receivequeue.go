@@ -14,8 +14,9 @@ import (
 // that the frame number is sequential, so when a new frame arrives, it is
 // placed at buf[frameNumber % size].
 type receiveQueue struct {
-	buf  []rxFrame
-	size uint64
+	readFrameTip uint64
+	buf          []rxFrame
+	size         uint64
 	// rp stands for read pointer, point to the index of the frame containing
 	// data yet to be read.
 	rp                    uint64
@@ -24,7 +25,6 @@ type receiveQueue struct {
 	readDeadline          time.Time
 	deadlineLock          sync.Mutex
 	closed                uint32 // 1 == true, 0 == false
-	readFrameTip          uint64
 	readLockmaybeidk      *sync.Mutex
 }
 
