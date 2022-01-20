@@ -25,7 +25,7 @@ type receiveQueue struct {
 	readDeadline          time.Time
 	deadlineLock          sync.Mutex
 	closed                uint32 // 1 == true, 0 == false
-	readLockmaybeidk      *sync.Mutex
+	readLock              *sync.Mutex
 }
 
 func newReceiveQueue(size int) *receiveQueue {
@@ -35,7 +35,7 @@ func newReceiveQueue(size int) *receiveQueue {
 		rp:                    minFrameNumber % uint64(size), // frame number starts with minFrameNumber, so should the read pointer
 		availableFrameChannel: make(chan bool, 1),
 		readNotifyChannel:     make(chan bool),
-		readLockmaybeidk:      &sync.Mutex{},
+		readLock:              &sync.Mutex{},
 	}
 	return rq
 }
@@ -168,8 +168,8 @@ func (rq *receiveQueue) read(b []byte) (int, error) {
 		<-rq.availableFrameChannel
 	}
 
-	rq.readLockmaybeidk.Lock()
-	defer rq.readLockmaybeidk.Unlock()
+	rq.readLock.Lock()
+	defer rq.readLock.Unlock()
 
 	totalN := 0
 	cur := rq.buf[rq.rp].bytes
