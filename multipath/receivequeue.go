@@ -102,7 +102,7 @@ func (rq *receiveQueue) add(f *rxFrame, sf *subflow) {
 func (rq *receiveQueue) isFull() bool {
 	printFull := false
 	for i := uint64(0); i < rq.size; i++ {
-		expectedFrameNumber := rq.readFrameTip + i
+		expectedFrameNumber := atomic.LoadUint64(&rq.readFrameTip) + i
 		idx := expectedFrameNumber % rq.size
 
 		if rq.buf[idx].fn != expectedFrameNumber {
@@ -112,9 +112,12 @@ func (rq *receiveQueue) isFull() bool {
 			return false
 		}
 
+		rq.readLock.Lock()
 		if rq.buf[idx].bytes == nil {
+			rq.readLock.Unlock()
 			return false
 		}
+		rq.readLock.Unlock()
 
 		if i == rq.size/2 {
 			printFull = true
@@ -128,6 +131,7 @@ func (rq *receiveQueue) tryAdd(f *rxFrame) bool {
 	idx := f.fn % rq.size
 	if rq.buf[idx].bytes == nil {
 		// empty slot
+		rq.readLock.Lock()
 		rq.buf[idx] = *f
 		if idx == rq.rp {
 			select {
@@ -135,6 +139,7 @@ func (rq *receiveQueue) tryAdd(f *rxFrame) bool {
 			default:
 			}
 		}
+		rq.readLock.Unlock()
 		return true
 	} else if rq.buf[idx].fn == f.fn {
 		// retransmission, ignore
@@ -151,9 +156,13 @@ func (rq *receiveQueue) tryAdd(f *rxFrame) bool {
 
 func (rq *receiveQueue) read(b []byte) (int, error) {
 	for {
+		rq.readLock.Lock()
 		if rq.buf[rq.rp].bytes != nil {
+			rq.readLock.Unlock()
 			break
 		}
+		rq.readLock.Unlock()
+
 		if atomic.LoadUint32(&rq.closed) == 1 {
 			return 0, ErrClosed
 		}

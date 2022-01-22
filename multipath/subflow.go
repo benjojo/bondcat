@@ -131,7 +131,7 @@ func (sf *subflow) readLoopFrames(ch chan *rxFrame, err error, r byteReader) boo
 			return true
 		}
 
-		if fn > (sf.mpc.recvQueue.readFrameTip + sf.mpc.recvQueue.size) {
+		if fn > (atomic.LoadUint64(&sf.mpc.recvQueue.readFrameTip) + sf.mpc.recvQueue.size) {
 			// This frame dropped is too far in the future to apply
 			continue
 		}
@@ -152,12 +152,14 @@ func (sf *subflow) sendLoop() {
 		case <-sf.chClose:
 			return
 		case frame := <-sf.sendQueue:
+			frame.changeLock.Lock()
 			if frame.retransmissions != 0 {
 				log.Tracef("Retransmit on %d, for the %dth time", frame.fn, frame.retransmissions)
 			}
 			if *frame.released == 1 {
 				log.Errorf("Tried to send a frame that has already been released! Frame Number: %v", frame.fn)
 				sf.mpc.writerMaybeReady <- true
+				frame.changeLock.Unlock()
 				continue
 			}
 			if frame.sentVia == nil {
@@ -165,6 +167,7 @@ func (sf *subflow) sendLoop() {
 			}
 			frame.sentVia = append(frame.sentVia, transmissionDatapoint{sf, time.Now()})
 			sf.addPendingAck(frame)
+			frame.changeLock.Unlock()
 
 			atomic.StoreUint64(&sf.actuallyBusyOnWrite, 1)
 			n, err := sf.conn.Write(frame.buf)
@@ -216,11 +219,13 @@ func (sf *subflow) sendLoop() {
 				continue
 			}
 			log.Tracef("done writing frame %d with %d bytes via %s", frame.fn, frame.sz, sf.to)
+			frame.changeLock.Lock()
 			if frame.retransmissions == 0 {
 				sf.tracker.OnSent(frame.sz)
 			} else {
 				sf.tracker.OnRetransmit(frame.sz)
 			}
+			frame.changeLock.Unlock()
 		}
 	}
 }

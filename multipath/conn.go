@@ -120,6 +120,9 @@ func (bc *mpConn) SetWriteDeadline(t time.Time) error {
 }
 
 func (bc *mpConn) retransmit(frame *sendFrame) {
+	frame.changeLock.Lock()
+	defer frame.changeLock.Unlock()
+
 	if atomic.LoadUint64(&frame.beingRetransmitted) == 1 {
 		return
 	}
@@ -227,7 +230,7 @@ func (bc *mpConn) retransmitLoop() {
 		select {
 		case <-evalTick.C:
 		}
-		if bc.closed == 1 {
+		if atomic.LoadUint32(&bc.closed) == 1 {
 			return
 		}
 
@@ -248,16 +251,19 @@ func (bc *mpConn) retransmitLoop() {
 
 		for _, frame := range RetransmitFrames {
 			sendframe := frame.framePtr
+			sendframe.changeLock.Lock()
 			if bc.isPendingAck(frame.fn) {
 				// No ack means the subflow fails or has a longer RTT
 				// log.Errorf("Retransmitting! %#v", frame.fn)
 				if sendframe.beingRetransmitted == 0 {
 					go bc.retransmit(sendframe)
 				}
+				sendframe.changeLock.Unlock()
 			} else {
 				// It is ok to release buffer here as the frame will never
 				// be retransmitted again.
 				sendframe.release()
+				sendframe.changeLock.Unlock()
 				bc.pendingAckMu.Lock()
 				delete(bc.pendingAckMap, frame.fn)
 				bc.pendingAckMu.Unlock()

@@ -48,6 +48,7 @@ package multipath
 import (
 	"bytes"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -101,6 +102,7 @@ type sendFrame struct {
 	retransmissions    int
 	sentVia            []transmissionDatapoint // Contains the subflows it's already been written to, and when
 	beingRetransmitted uint64
+	changeLock         sync.Mutex
 }
 
 func composeFrame(fn uint64, b []byte) *sendFrame {
