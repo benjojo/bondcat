@@ -162,10 +162,13 @@ func (sf *subflow) sendLoop() {
 				frame.changeLock.Unlock()
 				continue
 			}
-			if frame.sentVia == nil {
-				frame.sentVia = make([]transmissionDatapoint, 0)
+			if frame.retransmissions == 0 {
+				if frame.sentVia == nil {
+					frame.sentVia = make([]transmissionDatapoint, 0)
+				}
+				frame.sentVia = append(frame.sentVia, transmissionDatapoint{sf, time.Now()})
 			}
-			frame.sentVia = append(frame.sentVia, transmissionDatapoint{sf, time.Now()})
+
 			sf.addPendingAck(frame)
 			frame.changeLock.Unlock()
 
@@ -331,8 +334,11 @@ func (sf *subflow) probe() {
 
 func (sf *subflow) retransTimer() time.Duration {
 	d := sf.emaRTT.GetDuration() * 2
-	if d < 100*time.Millisecond {
-		d = 100 * time.Millisecond
+	if d > 512*time.Millisecond {
+		d = 512 * time.Millisecond
+	}
+	if d < 1*time.Millisecond {
+		d = time.Millisecond
 	}
 	return d
 }
