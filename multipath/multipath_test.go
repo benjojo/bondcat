@@ -17,6 +17,10 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+var frozenListeners [100]int
+var frozenDailers [100]int
+var frozenTrackingLock sync.Mutex
+
 func TestE2E(t *testing.T) {
 	// Failing on timeout
 	go func() {
@@ -34,7 +38,7 @@ func TestE2E(t *testing.T) {
 		listeners = append(listeners, newTestListener(l, i))
 		trackers = append(trackers, NullTracker{})
 		// simulate one or more dialers to each listener
-		for j := 0; j <= rand.Intn(5); j++ {
+		for j := 0; j <= 1; j++ {
 			dialers = append(dialers, newTestDialer(l.Addr().String(), len(dialers)))
 		}
 	}
@@ -42,6 +46,27 @@ func TestE2E(t *testing.T) {
 	bl := NewListener(listeners, trackers)
 	defer bl.Close()
 	bd := NewDialer("endpoint", dialers)
+
+	go func() {
+		lastDebug := ""
+		for {
+			frozenTrackingLock.Lock()
+			newDebug := "Dailers: \n"
+			for k, v := range dialers {
+				newDebug += fmt.Sprintf("\t(%d) - %v\n", frozenDailers[k], v.(*testDialer).name)
+			}
+			newDebug += "Listeners: \n"
+			for k, v := range listeners {
+				newDebug += fmt.Sprintf("\t(%d) - %v\n", frozenListeners[k], v.(*testListener).l.Addr())
+			}
+			if newDebug != lastDebug {
+				log.Debug(newDebug)
+				lastDebug = newDebug
+			}
+			frozenTrackingLock.Unlock()
+			time.Sleep(time.Millisecond * 33)
+		}
+	}()
 
 	go func() {
 		for {
@@ -77,7 +102,7 @@ func TestE2E(t *testing.T) {
 	defer conn.Close()
 	b := make([]byte, 4)
 	roundtrip := func() {
-		for i := 0; i < 10; i++ {
+		for i := 0; i < 5; i++ {
 			copy(b, []byte(strconv.Itoa(i)))
 			n, err := conn.Write(b)
 			assert.NoError(t, err)
@@ -92,22 +117,40 @@ func TestE2E(t *testing.T) {
 
 	for i := 0; i < len(listeners)-1; i++ {
 		log.Debugf("========listener[%d] is hanging", i)
+		frozenTrackingLock.Lock()
+		frozenListeners[i] = 1
+		frozenTrackingLock.Unlock()
 		listeners[i].(*testListener).setDelay(time.Hour)
 		roundtrip()
 	}
 	for i := 0; i < len(dialers)-1; i++ {
 		log.Debugf("========%s is hanging", dialers[i].Label())
+		frozenTrackingLock.Lock()
+		frozenDailers[i] = 1
+		frozenTrackingLock.Unlock()
 		dialers[i].(*testDialer).setDelay(time.Hour)
 		roundtrip()
 	}
 	log.Debugf("========reenabled listener #0 and %s", dialers[0].Label())
 	listeners[0].(*testListener).setDelay(0)
 	dialers[0].(*testDialer).setDelay(0)
+	frozenTrackingLock.Lock()
+	frozenListeners[0] = 0
+	frozenDailers[0] = 0
+	frozenTrackingLock.Unlock()
+
 	log.Debug("========the last listener is hanging")
 	listeners[len(listeners)-1].(*testListener).setDelay(time.Hour)
+	frozenTrackingLock.Lock()
+	frozenListeners[len(listeners)-1] = 1
+	frozenTrackingLock.Unlock()
+
 	roundtrip()
 	log.Debugf("========%s is hanging", dialers[len(dialers)-1].Label())
 	dialers[len(dialers)-1].(*testDialer).setDelay(time.Hour)
+	frozenTrackingLock.Lock()
+	frozenDailers[len(dialers)-1] = 1
+	frozenTrackingLock.Unlock()
 	roundtrip()
 
 	log.Debugf("========Now test writing and reading back tons of data")
