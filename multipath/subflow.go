@@ -5,6 +5,9 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -70,7 +73,24 @@ func startSubflow(to string, c net.Conn, mpc *mpConn, clientSide bool, probeStar
 	return sf
 }
 
+var (
+	debugAidGIDMap = sync.Map{}
+)
+
+func debugGoID() int {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	idField := strings.Fields(strings.TrimPrefix(string(buf[:n]), "goroutine "))[0]
+	id, err := strconv.Atoi(idField)
+	if err != nil {
+		panic(fmt.Sprintf("cannot get goroutine id: %v", err))
+	}
+	return id
+}
+
 func (sf *subflow) readLoop() (err error) {
+	debugAidGIDMap.Store(fmt.Sprintf("[RL] %s = %d", sf.to, debugGoID()), 1)
+
 	ch := make(chan *rxFrame)
 	r := byteReader{Reader: sf.conn}
 	go sf.readLoopFrames(ch, err, r)
@@ -82,6 +102,7 @@ func (sf *subflow) readLoop() (err error) {
 		select {
 		case frame := <-ch: // Fed by readLoopFrames
 			if frame == nil {
+				log.Errorf("Ker-fucking-boom???")
 				return
 			}
 			sf.mpc.recvQueue.add(frame, sf)
@@ -97,6 +118,8 @@ func (sf *subflow) readLoop() (err error) {
 }
 
 func (sf *subflow) readLoopFrames(ch chan *rxFrame, err error, r byteReader) bool {
+	debugAidGIDMap.Store(fmt.Sprintf("[RLF] %s = %d", sf.to, debugGoID()), 1)
+	defer tempExplosionCatcher()
 	defer close(ch)
 	for {
 		// The is the core "reactor" where frames are read. The frame format
@@ -146,19 +169,29 @@ func (sf *subflow) readLoopFrames(ch chan *rxFrame, err error, r byteReader) boo
 	}
 }
 
+func tempExplosionCatcher() {
+	log.Error("Kaboom!")
+}
+
 func (sf *subflow) sendLoop() {
+	debugAidGIDMap.Store(fmt.Sprintf("[SL] %s = %d", sf.to, debugGoID()), 1)
+
+	defer tempExplosionCatcher()
 	for {
 		select {
 		case <-sf.chClose:
 			return
 		case frame := <-sf.sendQueue:
-			frame.changeLock.Lock()
+			frame.changeLock.Lock(int(frame.fn))
 			if frame.retransmissions != 0 {
 				log.Tracef("Retransmit on %d, for the %dth time", frame.fn, frame.retransmissions)
 			}
 			if *frame.released == 1 {
 				log.Errorf("Tried to send a frame that has already been released! Frame Number: %v", frame.fn)
-				sf.mpc.writerMaybeReady <- true
+				select {
+				case sf.mpc.writerMaybeReady <- true:
+				default:
+				}
 				frame.changeLock.Unlock()
 				continue
 			}
@@ -189,12 +222,6 @@ func (sf *subflow) sendLoop() {
 				}
 			}
 
-			// only wake up one re-transmitter, to better control the possible hored of them
-			select {
-			case sf.mpc.tryRetransmit <- true:
-			default:
-			}
-
 			if err != nil {
 				log.Debugf("failed to write frame %d to %s: %v", frame.fn, sf.to, err)
 
@@ -222,7 +249,7 @@ func (sf *subflow) sendLoop() {
 				continue
 			}
 			log.Tracef("done writing frame %d with %d bytes via %s", frame.fn, frame.sz, sf.to)
-			frame.changeLock.Lock()
+			frame.changeLock.Lock(int(frame.fn))
 			if frame.retransmissions == 0 {
 				sf.tracker.OnSent(frame.sz)
 			} else {

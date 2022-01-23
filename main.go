@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
 	"net"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/getlantern/golog"
@@ -20,13 +20,17 @@ var (
 )
 
 func main() {
+	runtime.GOMAXPROCS(4)
 	var (
-		listenFlag                      bool
+		listenFlag, noAutoDetect        bool
 		ipv4OnlyFlag, ipv6OnlyFlag      bool
 		benchmarkMode, printMetrics     bool
 		idleTimeoutFlag, listenPortFlag int
 		relayHostFlag, execBinFlag      string
 	)
+
+	flag.BoolVar(&noAutoDetect, "a", false, "Disable bind auto detection")
+	flag.BoolVar(&noAutoDetect, "no-auto-detect", false, "Disable bind auto detection")
 
 	flag.BoolVar(&verboseFlag, "v", false, "Verbose mode")
 	flag.BoolVar(&verboseFlag, "verbose", false, "Verbose mode")
@@ -80,7 +84,7 @@ func main() {
 
 		bindAddrs := make([]string, 0)
 		allNetworkAddrs, err := net.InterfaceAddrs()
-		if err == nil {
+		if err == nil && !noAutoDetect {
 			for _, addrCIDR := range allNetworkAddrs {
 				ip, _, err := net.ParseCIDR(addrCIDR.String())
 				if ipv6OnlyFlag {
@@ -132,7 +136,7 @@ func main() {
 		remoteTargets := make([]net.Addr, 0)
 		for _, possibleTarget := range otherArgs {
 			hostname, portString, err := net.SplitHostPort(possibleTarget)
-			if err == nil {
+			if err == nil && !noAutoDetect {
 				familyTest := net.ParseIP(hostname)
 				if ipv6OnlyFlag {
 					if familyTest.To4() != nil {
@@ -187,7 +191,7 @@ func main() {
 
 		// Now we will build a list of compatible (IP Family wise) dialers
 		allNetworkAddrs, err := net.InterfaceAddrs()
-		if err == nil {
+		if err == nil && !noAutoDetect {
 			for _, addrCIDR := range allNetworkAddrs {
 				interfaceIP, _, _ := net.ParseCIDR(addrCIDR.String())
 				for _, rT := range remoteTargets {
@@ -247,6 +251,10 @@ func main() {
 	}
 
 	if relayHostFlag != "" {
+		if !listenFlag {
+			log.Fatalf("-relay can't be used without listen")
+		}
+
 		relayConn, err := net.Dial("tcp", relayHostFlag)
 		if err != nil {
 			log.Printf("Cannot dial host to relay connection to: %v", err)
@@ -355,8 +363,8 @@ func (D DevZero) Read(b []byte) (int, error) {
 		b[k] = 0x00
 	}
 
-	transmitted := rand.Intn(4096)
-	// transmitted := len(b)
+	// transmitted := rand.Intn(4096)
+	transmitted := len(b)
 	if len(b) < transmitted {
 		transmitted = len(b)
 	}

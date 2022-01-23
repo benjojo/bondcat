@@ -16,10 +16,12 @@ type mpConn struct {
 	recvQueue        *receiveQueue
 	closed           uint32 // 1 == true, 0 == false
 	writerMaybeReady chan bool
-	tryRetransmit    chan bool
 
 	pendingAckMap map[uint64]*pendingAck
 	pendingAckMu  *sync.RWMutex
+
+	sortedSubflowCache    []*subflow
+	sortedSubflowCacheAge time.Time
 }
 
 func newMPConn(cid connectionID) *mpConn {
@@ -27,7 +29,6 @@ func newMPConn(cid connectionID) *mpConn {
 		lastFN:           minFrameNumber - 1,
 		recvQueue:        newReceiveQueue(recieveQueueLength),
 		writerMaybeReady: make(chan bool, 1),
-		tryRetransmit:    make(chan bool, 1),
 		pendingAckMap:    make(map[uint64]*pendingAck),
 		pendingAckMu:     &sync.RWMutex{},
 	}
@@ -120,8 +121,7 @@ func (bc *mpConn) SetWriteDeadline(t time.Time) error {
 }
 
 func (bc *mpConn) retransmit(frame *sendFrame) {
-	frame.changeLock.Lock()
-	defer frame.changeLock.Unlock()
+	frame.changeLock.Lock(int(frame.fn))
 
 	if atomic.LoadUint64(&frame.beingRetransmitted) == 1 {
 		return
@@ -132,6 +132,7 @@ func (bc *mpConn) retransmit(frame *sendFrame) {
 	}()
 
 	subflows := bc.sortedSubflows()
+	frame.changeLock.Unlock()
 
 	alreadyTransmittedOnAllSubflows := false
 	for {
@@ -143,12 +144,14 @@ func (bc *mpConn) retransmit(frame *sendFrame) {
 		var selectedSubflow *subflow
 
 		abort, alreadyTransmittedOnAllSubflows, selectedSubflow = selectSubflowForRetransmit(subflows, frame, false)
-		if selectedSubflow == nil {
-			abort = true
-			alreadyTransmittedOnAllSubflows = true
-			break
+		if selectedSubflow == nil || alreadyTransmittedOnAllSubflows {
+			abort, alreadyTransmittedOnAllSubflows, selectedSubflow = selectSubflowForRetransmit(subflows, frame, true)
+			if selectedSubflow == nil && alreadyTransmittedOnAllSubflows {
+				abort = true
+				alreadyTransmittedOnAllSubflows = true
+				break
+			}
 		}
-
 		select {
 		case <-selectedSubflow.chClose:
 			continue
@@ -166,7 +169,8 @@ func (bc *mpConn) retransmit(frame *sendFrame) {
 		if abort {
 			break
 		}
-		<-bc.tryRetransmit
+		// <-bc.tryRetransmit
+		frame.changeLock.Lock(int(frame.fn))
 	}
 
 	if !alreadyTransmittedOnAllSubflows {
@@ -177,6 +181,8 @@ func (bc *mpConn) retransmit(frame *sendFrame) {
 }
 
 func selectSubflowForRetransmit(subflows []*subflow, frame *sendFrame, timeFallback bool) (bool, bool, *subflow) {
+	frame.changeLock.Lock(int(frame.fn))
+	defer frame.changeLock.Unlock()
 	var selectedSubflow *subflow
 	for _, sf := range subflows {
 		if atomic.LoadUint64(&sf.actuallyBusyOnWrite) == 1 {
@@ -200,7 +206,7 @@ func selectSubflowForRetransmit(subflows []*subflow, frame *sendFrame, timeFallb
 		// if we are in timeFallback mode
 		if usedBefore {
 			if timeFallback {
-				if time.Since(avoidTime) < time.Second {
+				if time.Since(avoidTime) > time.Second {
 					usedBefore = false
 				}
 			} else {
@@ -217,6 +223,12 @@ func selectSubflowForRetransmit(subflows []*subflow, frame *sendFrame, timeFallb
 }
 
 func (bc *mpConn) sortedSubflows() []*subflow {
+	if time.Since(bc.sortedSubflowCacheAge) < time.Second {
+		if bc.sortedSubflowCache != nil && len(bc.sortedSubflowCache) != 0 {
+			return bc.sortedSubflowCache
+		}
+	}
+
 	bc.muSubflows.RLock()
 	subflows := make([]*subflow, len(bc.subflows))
 	copy(subflows, bc.subflows)
@@ -224,16 +236,22 @@ func (bc *mpConn) sortedSubflows() []*subflow {
 	sort.Slice(subflows, func(i, j int) bool {
 		return subflows[i].getRTT() < subflows[j].getRTT()
 	})
+
+	bc.sortedSubflowCacheAge = time.Now()
+	bc.sortedSubflowCache = subflows
 	return subflows
 }
 
 func (bc *mpConn) add(to string, c net.Conn, clientSide bool, probeStart time.Time, tracker StatsTracker) {
+	log.Debug("mpConn.Add")
 	bc.muSubflows.Lock()
 	defer bc.muSubflows.Unlock()
 	bc.subflows = append(bc.subflows, startSubflow(to, c, bc, clientSide, probeStart, tracker))
 }
 
 func (bc *mpConn) remove(theSubflow *subflow) {
+	log.Debug("mpConn.Remove")
+
 	bc.muSubflows.Lock()
 	var remains []*subflow
 	for _, sf := range bc.subflows {
@@ -276,7 +294,7 @@ func (bc *mpConn) retransmitLoop() {
 
 		for _, frame := range RetransmitFrames {
 			sendframe := frame.framePtr
-			sendframe.changeLock.Lock()
+			sendframe.changeLock.Lock(int(frame.fn))
 			if bc.isPendingAck(frame.fn) {
 				// No ack means the subflow fails or has a longer RTT
 				// log.Errorf("Retransmitting! %#v", frame.fn)

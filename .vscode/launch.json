@@ -9,13 +9,20 @@
             "port": 2345,
             "host": "192.168.2.97"
         },
+        {
+            "name": "Attach to PID",
+            "type": "go",
+            "request": "attach",
+            "mode": "local",
+            "processId": 218151
+        },
     {
         "name": "Launch Package",
         "type": "go",
         "request": "launch",
         "mode": "auto",
         "program": "${fileDirname}",
-        "args": ["192.168.2.195:11231","[2a0c:2f07:4663:4663:1e56:c36a:accc:8221]:11231"],
+        "args": ["-v","-b","localhost:1231"],
     }
     ]
 }
