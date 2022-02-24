@@ -20,7 +20,7 @@ Options for bondcat:
 	-no-auto-detect
 	-b		Write and read 0x00 as fast as possible upon connections
 	-benchmark
-	-i		Close connetion after n seconds of inactivity
+	-i		Close connection after n seconds of inactivity
 	-idle-timeout
 	-l		Listen for bondcat connections
 	-listen
