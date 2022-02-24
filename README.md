@@ -1,7 +1,7 @@
 # bondcat
 ![bondcat banner](/.github/bondcat.png)
 
-Bondcat is a [netcat](https://en.wikipedia.org/wiki/Netcat) like system utility that has the ability to combine multipul TCP connections for better transfer speeds, but also better reliability (Assuming the connections take different network paths).
+Bondcat is a [netcat](https://en.wikipedia.org/wiki/Netcat) like system utility that has the ability to combine multiple TCP connections for better transfer speeds, but also better reliability (Assuming the connections take different network paths).
 
 ---
 
@@ -29,7 +29,7 @@ Options for bondcat:
         -no-auto-detect
         -b              Write and read 0x00 as fast as possible upon connections
         -benchmark
-        -i              Close connetion after duration of inactivity (for example "10s")
+        -i              Close connection after duration of inactivity (for example "10s")
         -idle-timeout
         -l              Listen for bondcat connections
         -listen
@@ -45,10 +45,10 @@ Usage info:
         Bondcat can only work when the underlying network connectivity allows for it to
         use more than one NIC/Link at once.
 
-        In the case of WAN links that involve link aggergation, This is likely a case of
+        In the case of WAN links that involve link aggregation, This is likely a case of
         setting the -multiplier flag to above 1 against one hostname:port
 
-        For LAN connectvity directing traffic is a little more complex depending on the
+        For LAN connectivity directing traffic is a little more complex depending on the
         exact situation you are in.
 
         If you are coming from a setup of "1xFast -> 2xSlow" then it's best to start the
