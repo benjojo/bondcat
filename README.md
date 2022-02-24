@@ -1,7 +1,7 @@
 # bondcat
 ![bondcat banner](/.github/bondcat.png)
 
-BondCat is a [netcat](https://en.wikipedia.org/wiki/Netcat) like system utility that has the ability to combine multipul TCP connections for better transfer speeds, but also better reliability (Assuming the connections take different network paths).
+Bondcat is a [netcat](https://en.wikipedia.org/wiki/Netcat) like system utility that has the ability to combine multipul TCP connections for better transfer speeds, but also better reliability (Assuming the connections take different network paths).
 
 ---
 
@@ -111,6 +111,6 @@ A much more common setup is that you have a ethernet switch in the middle with d
          +-+            |
 ```
 
-BondCat can be used for more than just better throughput. If you want your connection to stay online even if your normal connection fails, even if just for a moment. 
+Bondcat can be used for more than just better throughput. If you want your connection to stay online even if your normal connection fails, even if just for a moment. 
 
 This could be used to have ultra reliable SSH for example. Or if you are doing critical data streaming that need rapid failover.
