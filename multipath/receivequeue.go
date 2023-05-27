@@ -132,7 +132,13 @@ func (rq *receiveQueue) isFull() bool {
 func (rq *receiveQueue) tryAdd(f *rxFrame) bool {
 	rq.readLock.Lock()
 	idx := f.fn % rq.size
-	if rq.buf[idx].bytes == nil {
+	if rq.buf[idx].fn == f.fn {
+		rq.readLock.Unlock()
+		// retransmission, ignore
+		log.Tracef("Got a retransmit. for %d", f.fn)
+		pool.Put(f.bytes)
+		return true
+	} else if rq.buf[idx].bytes == nil {
 		// empty slot
 		rq.buf[idx] = *f
 		if idx == rq.rp {
@@ -142,12 +148,6 @@ func (rq *receiveQueue) tryAdd(f *rxFrame) bool {
 			}
 		}
 		rq.readLock.Unlock()
-		return true
-	} else if rq.buf[idx].fn == f.fn {
-		rq.readLock.Unlock()
-		// retransmission, ignore
-		log.Tracef("Got a retransmit. for %d", f.fn)
-		pool.Put(f.bytes)
 		return true
 	}
 	rq.readLock.Unlock()
