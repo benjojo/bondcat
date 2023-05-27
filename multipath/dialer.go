@@ -86,58 +86,61 @@ func NewDialer(dest string, dialers []Dialer) Dialer {
 	return d
 }
 
+func (mpd *mpDialer) dialOne(d *subflowDialer, cid connectionID, bc *mpConn, ctx context.Context) (connectionID, bool, *mpConn) {
+	conn, err := d.DialContext(ctx)
+	if err != nil {
+		log.Errorf("failed to dial %s: %v", d.Label(), err)
+		return zeroCID, false, bc
+	}
+	probeStart := time.Now()
+	newCID, err := mpd.handshake(conn, cid)
+	if err != nil {
+		log.Errorf("failed to handshake %s, continuing: %v", d.Label(), err)
+		conn.Close()
+		return zeroCID, false, bc
+	}
+	if cid == zeroCID {
+		bc = newMPConn(newCID)
+		go func() {
+			for {
+				time.Sleep(time.Second)
+				bc.pendingAckMu.RLock()
+				oldest := time.Duration(0)
+				oldestFN := uint64(0)
+				for fn, frame := range bc.pendingAckMap {
+					if time.Since(frame.sentAt) > oldest {
+						oldest = time.Since(frame.sentAt)
+						oldestFN = fn
+					}
+				}
+				bc.pendingAckMu.RUnlock()
+				if oldest > time.Second {
+					log.Debugf("Frame %d has not been acked for %v\n", oldestFN, oldest)
+				}
+			}
+		}()
+	}
+	bc.add(fmt.Sprintf("%x(%s)", newCID, d.label), conn, true, probeStart, d)
+	return newCID, true, bc
+}
+
 // DialContext dials the addr using all dialers and returns a connection
 // contains subflows from whatever dialers available.
 func (mpd *mpDialer) DialContext(ctx context.Context) (net.Conn, error) {
 	var bc *mpConn
-	dialOne := func(d *subflowDialer, cid connectionID) (connectionID, bool) {
-		conn, err := d.DialContext(ctx)
-		if err != nil {
-			log.Errorf("failed to dial %s: %v", d.Label(), err)
-			return zeroCID, false
-		}
-		probeStart := time.Now()
-		newCID, err := mpd.handshake(conn, cid)
-		if err != nil {
-			log.Errorf("failed to handshake %s, continuing: %v", d.Label(), err)
-			conn.Close()
-			return zeroCID, false
-		}
-		if cid == zeroCID {
-			bc = newMPConn(newCID)
-			go func() {
-				for {
-					time.Sleep(time.Second)
-					bc.pendingAckMu.RLock()
-					oldest := time.Duration(0)
-					oldestFN := uint64(0)
-					for fn, frame := range bc.pendingAckMap {
-						if time.Since(frame.sentAt) > oldest {
-							oldest = time.Since(frame.sentAt)
-							oldestFN = fn
-						}
-					}
-					bc.pendingAckMu.RUnlock()
-					if oldest > time.Second {
-						log.Debugf("Frame %d has not been acked for %v\n", oldestFN, oldest)
-					}
-				}
-			}()
-		}
-		bc.add(fmt.Sprintf("%x(%s)", newCID, d.label), conn, true, probeStart, d)
-		return newCID, true
-	}
 	dialers := mpd.sorted()
 	for i, d := range dialers {
 		// dial the first connection with zero connection ID
-		cid, ok := dialOne(d, zeroCID)
+		dialctx, dialcancel := context.WithTimeout(ctx, time.Second*2)
+		defer dialcancel()
+		cid, ok, bc := mpd.dialOne(d, zeroCID, bc, dialctx)
 		if !ok {
 			continue
 		}
 		if i < len(dialers)-1 {
 			// dial the rest in parallel with server assigned connection ID
 			for _, d := range dialers[i+1:] {
-				go dialOne(d, cid)
+				go mpd.dialOne(d, cid, bc, ctx)
 			}
 		}
 		return bc, nil

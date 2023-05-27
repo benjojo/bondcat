@@ -10,9 +10,9 @@
 // first subflow, the client sends an all-zero connnection ID (CID) and the
 // server sends the assigned CID back. Subsequent subflows use the same CID.
 //
-//       ----------------------------------------------------
-//      |  version(1)  |  cid(16)  |  frames (...)  |
-//       ----------------------------------------------------
+//	 ----------------------------------------------------
+//	|  version(1)  |  cid(16)  |  frames (...)  |
+//	 ----------------------------------------------------
 //
 // There are two types of frames. Data frame carries application data while ack
 // frame carries acknowledgement to the frame just received. When one data
@@ -21,28 +21,29 @@
 // variable-length integer encoding as described here:
 // https://tools.ietf.org/html/draft-ietf-quic-transport-29#section-16
 //
-//       --------------------------------------------------------
-//      |  payload size(1-8)  |  frame number (1-8)  |  payload  |
-//       --------------------------------------------------------
+//	 --------------------------------------------------------
+//	|  payload size(1-8)  |  frame number (1-8)  |  payload  |
+//	 --------------------------------------------------------
 //
-//       ---------------------------------------
-//      |  00000000  |  ack frame number (1-8)  |
-//       ---------------------------------------
+//	 ---------------------------------------
+//	|  00000000  |  ack frame number (1-8)  |
+//	 ---------------------------------------
 //
 // Ack frames with frame number < 10 are reserved for control. For now only 0
 // and 1 are used, for ping and pong frame respectively. They are for updating
 // RTT on inactive subflows and detecting recovered subflows.
 //
 // Ping frame:
-//       -------------------------
-//      |  00000000  |  00000000  |
-//       -------------------------
+//
+//	 -------------------------
+//	|  00000000  |  00000000  |
+//	 -------------------------
 //
 // Pong frame:
-//       -------------------------
-//      |  00000000  |  00000001  |
-//       -------------------------
 //
+//	 -------------------------
+//	|  00000000  |  00000001  |
+//	 -------------------------
 package multipath
 
 import (
